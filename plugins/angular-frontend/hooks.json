@@ -1,0 +1,12 @@
+{
+  "version": 1,
+  "hooks": {
+    "preToolUse": [
+      {
+        "type": "command",
+        "command": "node \"${PLUGIN_ROOT}/skills/karma-vitest-migrate/scripts/verify-artifacts-gate.mjs\" --hook",
+        "timeoutSec": 10
+      }
+    ]
+  }
+}

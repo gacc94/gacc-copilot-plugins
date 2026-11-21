@@ -1,0 +1,115 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://gacc.dev/schemas/angular-frontend/diagnosis-report.schema.json",
+  "title": "Angular Karma-to-Vitest Diagnosis Report (Phase 1)",
+  "type": "object",
+  "required": [
+    "schemaVersion",
+    "evaluatedAt",
+    "projectPath",
+    "status",
+    "summary",
+    "detected",
+    "requirements",
+    "blockers",
+    "specInventory",
+    "approval"
+  ],
+  "properties": {
+    "schemaVersion": {
+      "type": "string",
+      "const": "1.0.0"
+    },
+    "evaluatedAt": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "projectPath": {
+      "type": "string"
+    },
+    "status": {
+      "type": "string",
+      "enum": ["READY", "BLOCKED"]
+    },
+    "summary": {
+      "type": "string"
+    },
+    "detected": {
+      "type": "object",
+      "required": [
+        "angularCoreVersion",
+        "nodeVersion",
+        "testBuilder",
+        "specFileCount"
+      ],
+      "properties": {
+        "projectName": { "type": ["string", "null"] },
+        "angularCoreVersion": { "type": ["string", "null"] },
+        "angularCliVersion": { "type": ["string", "null"] },
+        "nodeVersion": { "type": "string" },
+        "testBuilder": { "type": ["string", "null"] },
+        "hasKarmaDeps": { "type": "boolean" },
+        "hasJasmineDeps": { "type": "boolean" },
+        "hasKarmaConf": { "type": "boolean" },
+        "specFileCount": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "requirements": {
+      "type": "object",
+      "required": ["minStableAngularVersion", "targetBuilder", "targetRunner"],
+      "properties": {
+        "minStableAngularVersion": { "type": "string", "const": "21.0.0" },
+        "requiredNodeRange": { "type": "string" },
+        "targetBuilder": {
+          "type": "string",
+          "const": "@angular/build:unit-test"
+        },
+        "targetRunner": { "type": "string", "const": "vitest" }
+      }
+    },
+    "blockers": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["code", "severity", "message", "remediation"],
+        "properties": {
+          "code": { "type": "string" },
+          "severity": { "type": "string", "enum": ["error", "warning"] },
+          "message": { "type": "string" },
+          "remediation": { "type": "string" }
+        }
+      }
+    },
+    "specInventory": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["file", "jasminePatterns", "complexity"],
+        "properties": {
+          "file": { "type": "string" },
+          "jasminePatterns": {
+            "type": "array",
+            "items": { "type": "string" }
+          },
+          "complexity": {
+            "type": "string",
+            "enum": ["low", "medium", "high"]
+          }
+        }
+      }
+    },
+    "approval": {
+      "type": "object",
+      "required": ["status", "reviewer", "approvedAt"],
+      "properties": {
+        "status": {
+          "type": "string",
+          "enum": ["PENDING", "APPROVED", "REJECTED"]
+        },
+        "reviewer": { "type": ["string", "null"] },
+        "approvedAt": { "type": ["string", "null"] },
+        "notes": { "type": ["string", "null"] }
+      }
+    }
+  }
+}
