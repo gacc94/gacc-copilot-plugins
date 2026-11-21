@@ -14,6 +14,7 @@ Este repositorio centraliza plugins especializados por tecnología bajo `plugins
     ```bash
     node -v
     ```
+* **Repositorio Git con al menos un commit (para uso local):** VS Code valida la revisión Git de un marketplace local antes de instalar sus plugins. Asegúrate de tener el repositorio inicializado y con cambios commiteados (`git init && git add -A && git commit`).
 * **Ejecución 100% local (sin servidores MCP ni dependencias externas):** Los scripts incluidos en las skills están escritos en **JavaScript ESM puro (`.mjs`)** utilizando únicamente módulos nativos de Node.js (`node:fs`, `node:path`). No requieren compilación ni `npm install`.
 
 ---
@@ -35,34 +36,48 @@ gacc-copilot-plugins/
 
 ---
 
-## 3. Cómo Configurar los Plugins en VS Code
+## 3. Cómo Configurar los Plugins en VS Code (Copilot Harness)
 
-### Opción A — Registrar el Marketplace completo (Recomendado para equipos)
+### Opción A — Desde Copilot Chat con `/plugin` (Recomendado)
 
-Agrega la ruta local (con esquema `file:///`) o el repositorio de GitHub en tu `settings.json` de VS Code:
-
-```json
-{
-  "chat.plugins.enabled": true,
-  "chat.plugins.marketplaces": [
-    "file:///Users/gustavocaqui/Development/gacc/projects/plugins/gacc-copilot-plugins"
-  ]
-}
-```
-
-> Si el repositorio está publicado en GitHub (por ejemplo `gacc-org/gacc-copilot-plugins`), puedes usar `"gacc-org/gacc-copilot-plugins"` en `"chat.plugins.marketplaces"`.
-
-Una vez registrado el marketplace, puedes explorar e instalar sus plugins desde el editor (**`Chat: Open Customizations` → `Plugins`**) o desde la entrada de **Copilot Chat**:
+Con el harness **Copilot** activo en VS Code Copilot Chat, registra el marketplace e instala el plugin directamente:
 
 ```text
+/plugin marketplace add /Users/gustavocaqui/Development/gacc/projects/plugins/gacc-copilot-plugins
 /plugin marketplace list
 /plugin marketplace browse gacc-copilot-plugins
 /plugin install angular-frontend@gacc-copilot-plugins
 ```
 
-### Opción B — Cargar un plugin directamente en desarrollo local
+> Si publicas el repositorio en GitHub (por ejemplo `gacc-org/gacc-copilot-plugins`), reemplaza la ruta local por `gacc-org/gacc-copilot-plugins`.
 
-Para probar cambios locales sobre un plugin sin reinstalarlo desde el catálogo, usa `"chat.pluginLocations"` en `settings.json`:
+### Opción B — Configuración directa en `~/.copilot/settings.json`
+
+El runtime de **Copilot** lee los marketplaces de usuario desde `~/.copilot/settings.json` (o `.github/copilot/settings.json` a nivel de proyecto):
+
+```json
+{
+  "extraKnownMarketplaces": {
+    "gacc-copilot-plugins": {
+      "source": {
+        "source": "directory",
+        "path": "/Users/gustavocaqui/Development/gacc/projects/plugins/gacc-copilot-plugins"
+      }
+    }
+  },
+  "enabledPlugins": {
+    "angular-frontend@gacc-copilot-plugins": true
+  }
+}
+```
+
+> **Si el repositorio está en GitHub:** cambia `"source"` por `{ "source": "github", "repo": "gacc-org/gacc-copilot-plugins" }`.
+>
+> **Nota sobre `settings.json` de VS Code:** si agregas el marketplace en `"chat.plugins.marketplaces"` dentro del `settings.json` clásico de VS Code, el editor mostrará el aviso **Keep your customizations working** con el botón **Migrate...** para trasladarlo automáticamente a `~/.copilot/settings.json`.
+
+### Opción C — Carga directa de un plugin en desarrollo local (`settings.json` de VS Code)
+
+Para iterar rápidamente sobre un plugin local sin reinstalarlo desde el catálogo:
 
 ```json
 {
@@ -88,3 +103,4 @@ Para probar cambios locales sobre un plugin sin reinstalarlo desde el catálogo,
 1. Crea una nueva carpeta bajo `plugins/<tecnologia>-<rol>/` (por ejemplo, `plugins/nestjs-backend/` o `plugins/java-backend/`).
 2. Añade su manifiesto `plugin.json`, su `README.md` y sus carpetas portables (`agents/`, `skills/`, `hooks.json`).
 3. Registra la nueva entrada dentro del arreglo `plugins` en `marketplace.json` con su ruta relativa en `source`.
+4. Haz commit de los cambios en Git para que el marketplace refleje la nueva revisión.
