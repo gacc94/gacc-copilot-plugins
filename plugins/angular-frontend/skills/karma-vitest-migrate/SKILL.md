@@ -21,10 +21,10 @@ node "<ruta-del-plugin>/skills/karma-vitest-migrate/scripts/verify-artifacts-gat
 ```
 
 ### B. Modo Hook `preToolUse` de Copilot (`--hook`)
-* Invocado automáticamente por `hooks.json` y por el frontmatter `hooks.preToolUse` de `karma-vitest-migrator.agent.md`.
-* Lee el payload JSON del evento desde `stdin`:
-  * Si la herramienta es de solo lectura (`read`, `search`, etc.) o si se está escribiendo únicamente dentro de `.migration-artifacts/karma-to-vitest/`, devuelve `{}` en `stdout`.
-  * Si un agente intenta editar archivos fuera de `.migration-artifacts/` cuando los artefactos `01-diagnosis-report.json` y `02-migration-plan.json` no están en estado `READY` + `APPROVED`, bloquea la llamada devolviendo:
+* Declarado exclusivamente como **agent-scoped hook** en el frontmatter `hooks.preToolUse` de `karma-vitest-migrator.agent.md` (evitando bloquear el análisis en Fase 1, la planificación en Fase 2 o sesiones normales de chat).
+* Lee el payload JSON del evento desde `stdin` (`toolName` y `toolArgs` en camelCase de Copilot, o `tool_name` / `tool_input` en snake_case):
+  * Permite siempre herramientas de solo lectura, búsqueda, preguntas y delegación (`view`, `glob`, `grep`, `task`, `ask_user`, `web_fetch`), la ejecución de `check-prereqs.mjs` / `verify-artifacts-gate.mjs`, y escrituras dentro de `.migration-artifacts/karma-to-vitest/`.
+  * Si el migrador intenta ejecutar herramientas mutables (`edit`, `create`, `bash`, `powershell`, etc.) sobre código del repositorio sin que `01-diagnosis-report.json` (`READY` + `APPROVED`) y `02-migration-plan.json` (`APPROVED`) existan, bloquea la llamada devolviendo:
     ```json
     {
       "permissionDecision": "deny",

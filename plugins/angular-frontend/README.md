@@ -52,13 +52,13 @@ Solo aparece **1 agente visible** en el selector de Copilot Chat; los otros **3 
 
 ---
 
-## 4. Guía de Alto Nivel: Skills (`skills/`) y Hook (`hooks.json`)
+## 4. Guía de Alto Nivel: Skills (`skills/`) y Hook (`agent-scoped`)
 
 Las skills encapsulan las reglas, esquemas y scripts deterministas en Node.js que cargan los agentes bajo demanda (`user-invocable: false`):
 
 * **`angular-migration-prereqs`**: Ejecuta `scripts/check-prereqs.mjs` para inspeccionar `package.json`, `angular.json`, `karma.conf.js` y `*.spec.ts`, clasificando la estrategia en **`UPGRADE_FIRST`** (`BLOCKED` si Angular `< 21`), **`OFFICIAL_SCHEMATIC_SUFFICIENT`** (basta el schematic oficial de Angular) o **`HYBRID_SCHEMATIC_PLUS_AGENT`** (requiere Fase 2 y Fase 3 del plugin).
 * **`karma-vitest-audit`**: Define la estructura y los JSON Schemas de los artefactos (`01-diagnosis-report.json` y `02-migration-plan.json`), así como el catálogo de equivalencias de Jasmine/Karma a Vitest.
-* **`karma-vitest-migrate`**: Contiene las reglas de transformación determinista y el validador `scripts/verify-artifacts-gate.mjs` (usado tanto por CLI como por el hook `preToolUse`) que impide modificar archivos del proyecto si el diagnóstico o el plan no existen o no han sido aprobados por el especialista.
+* **`karma-vitest-migrate`**: Contiene las reglas de transformación determinista y el validador `scripts/verify-artifacts-gate.mjs` (usado tanto por CLI como mediante un **agent-scoped hook** `preToolUse` en `karma-vitest-migrator.agent.md`) que impide modificar archivos del proyecto durante la Fase 3 si el diagnóstico o el plan no existen o no han sido aprobados por el especialista, sin bloquear la Fase 1 ni la Fase 2.
 
 ---
 

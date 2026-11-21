@@ -28,9 +28,8 @@ gacc-copilot-plugins/
 └── plugins/
     └── angular-frontend/             # Plugin para proyectos Angular (Karma → Vitest)
         ├── plugin.json
-        ├── hooks.json
         ├── README.md
-        ├── agents/
+        ├── agents/                   # Incluye agent-scoped hook en karma-vitest-migrator
         └── skills/
 ```
 
@@ -94,7 +93,7 @@ Para iterar rápidamente sobre un plugin local sin reinstalarlo desde el catálo
 
 | Plugin | Ruta (`source`) | Versión | Descripción | Documentación |
 | :--- | :--- | :---: | :--- | :--- |
-| **`angular-frontend`** | `./plugins/angular-frontend` | `1.0.0` | Diagnóstico, planificación ejecutable y migración determinista de Jasmine/Karma a Vitest (Angular 21+). | [Ver README](./plugins/angular-frontend/README.md) |
+| **`angular-frontend`** | `./plugins/angular-frontend` | `1.0.1` | Diagnóstico, planificación ejecutable y migración determinista de Jasmine/Karma a Vitest (Angular 21+). | [Ver README](./plugins/angular-frontend/README.md) |
 
 ---
 

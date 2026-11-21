@@ -12,7 +12,7 @@
     {
       "name": "angular-frontend",
       "description": "Orquestador, subagentes, skills y hooks para Angular: diagnóstico, planificación ejecutable y migración determinista de Jasmine/Karma a Vitest (Angular 21+)",
-      "version": "1.0.0",
+      "version": "1.0.1",
       "source": "./plugins/angular-frontend"
     }
   ]

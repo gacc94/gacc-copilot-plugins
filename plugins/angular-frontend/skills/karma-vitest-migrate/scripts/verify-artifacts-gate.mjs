@@ -7,9 +7,13 @@
  *    node verify-artifacts-gate.mjs --project <dir> --phase <plan|migrate>
  *    Exits with 0 if the required artifacts exist and are APPROVED, or 1 otherwise.
  *
- * 2. Copilot preToolUse Hook mode:
+ * 2. Copilot preToolUse Hook mode (agent-scoped on karma-vitest-migrator):
  *    node verify-artifacts-gate.mjs --hook [--project <dir>]
- *    Reads the Copilot preToolUse event JSON from stdin and outputs either:
+ *    Reads the Copilot preToolUse event JSON from stdin:
+ *      { sessionId, timestamp, cwd, toolName, toolArgs }
+ *    or VS Code PreToolUse snake_case format:
+ *      { hook_event_name, session_id, timestamp, cwd, tool_name, tool_input }
+ *    Outputs either:
  *    - {} (allow / no decision)
  *    - {"permissionDecision":"deny","permissionDecisionReason":"..."}
  *
@@ -23,6 +27,39 @@ const DIAGNOSIS_JSON = '01-diagnosis-report.json';
 const DIAGNOSIS_MD = '01-diagnosis-report.md';
 const PLAN_JSON = '02-migration-plan.json';
 const PLAN_MD = '02-migration-plan.md';
+
+// Official Copilot / VS Code mutating or shell execution tools that must pass the migration gate
+const MUTATING_TOOL_PATTERNS = [
+  'edit',
+  'create',
+  'write',
+  'delete',
+  'remove',
+  'replace',
+  'patch',
+  'bash',
+  'powershell',
+  'terminal',
+  'shell',
+  'exec',
+  'run_command',
+];
+
+// Official Copilot read-only, search, UI, and orchestration tools (always allowed)
+const ALWAYS_ALLOWED_TOOLS = new Set([
+  'view',
+  'glob',
+  'grep',
+  'task',
+  'ask_user',
+  'web_fetch',
+  'read',
+  'search',
+  'todo',
+  'agent',
+  'report_intent',
+  'vscode/askquestions',
+]);
 
 function parseArgs(argv) {
   let projectDir = process.cwd();
@@ -127,26 +164,52 @@ function validateGate(projectDir, phase) {
   };
 }
 
-function isReadOnlyOrArtifactAction(event) {
-  if (!event || typeof event !== 'object') return false;
-  const toolName = String(event.toolName || event.tool_name || '').toLowerCase();
+function extractRawArgsText(event) {
+  const raw =
+    event.toolArgs ??
+    event.toolInput ??
+    event.tool_input ??
+    event.input ??
+    event.arguments ??
+    '';
 
-  // Always allow read/search/agent/todo tools
-  const readOnlyPatterns = ['read', 'search', 'grep', 'find', 'list', 'agent', 'task', 'todo'];
-  if (readOnlyPatterns.some((p) => toolName.includes(p))) {
+  if (typeof raw === 'string') {
+    return raw;
+  }
+  try {
+    return JSON.stringify(raw);
+  } catch {
+    return '';
+  }
+}
+
+function shouldAllowWithoutMigrationGate(event) {
+  if (!event || typeof event !== 'object') return true;
+  const toolName = String(event.toolName || event.tool_name || '').trim().toLowerCase();
+
+  if (!toolName) return true;
+
+  // Always allow known read-only, search, UI, and delegation tools
+  if (ALWAYS_ALLOWED_TOOLS.has(toolName)) {
     return true;
   }
 
-  // Inspect tool input/arguments if available
-  const rawInput = JSON.stringify(event.toolInput || event.tool_input || event.input || event.arguments || {});
-
-  // Allow executing check-prereqs.mjs or verify-artifacts-gate.mjs
-  if (rawInput.includes('check-prereqs.mjs') || rawInput.includes('verify-artifacts-gate.mjs')) {
+  // Only enforce the gate on mutating/shell tools; let unknown read/helper tools pass
+  const isMutating = MUTATING_TOOL_PATTERNS.some((p) => toolName.includes(p));
+  if (!isMutating) {
     return true;
   }
 
-  // Allow writing/editing files inside .migration-artifacts/karma-to-vitest
-  if (rawInput.includes('.migration-artifacts/karma-to-vitest') || rawInput.includes('.migration-artifacts\\\\karma-to-vitest')) {
+  const argsText = extractRawArgsText(event);
+
+  // Always allow running the plugin's own prerequisite/gate validator scripts
+  if (argsText.includes('check-prereqs.mjs') || argsText.includes('verify-artifacts-gate.mjs')) {
+    return true;
+  }
+
+  // Always allow creating/editing files inside .migration-artifacts/karma-to-vitest
+  const normalizedArgs = argsText.replace(/\\\\/g, '/').replace(/\\/g, '/');
+  if (normalizedArgs.includes('.migration-artifacts/karma-to-vitest')) {
     return true;
   }
 
@@ -170,7 +233,7 @@ function runHookMode(defaultProjectDir) {
     }
   }
 
-  if (isReadOnlyOrArtifactAction(event)) {
+  if (shouldAllowWithoutMigrationGate(event)) {
     process.stdout.write('{}\n');
     process.exit(0);
   }
