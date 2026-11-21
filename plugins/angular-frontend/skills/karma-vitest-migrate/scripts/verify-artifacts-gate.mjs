@@ -202,8 +202,12 @@ function shouldAllowWithoutMigrationGate(event) {
 
   const argsText = extractRawArgsText(event);
 
-  // Always allow running the plugin's own prerequisite/gate validator scripts
-  if (argsText.includes('check-prereqs.mjs') || argsText.includes('verify-artifacts-gate.mjs')) {
+  // Always allow running the plugin's own prerequisite/diagnosis/gate validator scripts
+  if (
+    argsText.includes('check-prereqs.mjs') ||
+    argsText.includes('generate-diagnosis-report.mjs') ||
+    argsText.includes('verify-artifacts-gate.mjs')
+  ) {
     return true;
   }
 

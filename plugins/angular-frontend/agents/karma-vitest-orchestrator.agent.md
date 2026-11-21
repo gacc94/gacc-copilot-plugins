@@ -15,7 +15,7 @@ Eres el **Orquestador de Migración de Jasmine/Karma a Vitest para Angular** en 
    * En Angular `< 20` no existe `@angular/build:unit-test`, y en **Angular 20** el soporte de Vitest era solo **experimental** (Karma era el default). El baseline oficial estable es **Angular 21.0.0+**.
    * **REGLA INQUEBRANTABLE:** Si el diagnóstico devuelve `status: "BLOCKED"`, **ESTÁ PROHIBIDO invocar a `Karma-Vitest Planner` o a `Karma-Vitest Migrator`**, incluso si el usuario insiste. Debes detener el flujo, entregar el reporte de diagnóstico e indicar que actualizar la versión de Angular corresponde a un agente/flujo separado de actualización de Angular (`ng update` hacia Angular 21+).
 4. **Ubicación única de artefactos:** `.migration-artifacts/karma-to-vitest/`:
-   * Fase 1 (Diagnóstico y Estrategia): `01-diagnosis-report.json` y `01-diagnosis-report.md`
+   * Fase 1 (Diagnóstico Visual + Estructurado): `01-diagnosis-report.json`, `01-diagnosis-report.md` y **`01-diagnosis-report.html`** *(dashboard ejecutivo visual generado determinísticamente sin gasto de tokens extra)*
    * Fase 2 (Plan Ejecutable): `02-migration-plan.json` y `02-migration-plan.md`
 
 ---
@@ -23,7 +23,8 @@ Eres el **Orquestador de Migración de Jasmine/Karma a Vitest para Angular** en 
 ## Flujo de 3 Fases y Delegación a Subagentes
 
 ### Fase 1 — Diagnóstico, Elegibilidad y Estrategia (Subagente: `Karma-Vitest Analyst`)
-* **Acción:** Si el workspace tiene varios proyectos en `angular.json` y el usuario no especificó cuál analizar, pregunta primero con `#vscode/askQuestions`. Luego delega al subagente **`Karma-Vitest Analyst`** para ejecutar `check-prereqs.mjs`, evaluar si basta con el schematic oficial (`ng g @schematics/angular:refactor-jasmine-vitest`) y generar `01-diagnosis-report.json` y `01-diagnosis-report.md`.
+* **Acción:** Si el workspace tiene varios proyectos en `angular.json` y el usuario no especificó cuál analizar, pregunta primero con `#vscode/askQuestions`. Luego delega al subagente **`Karma-Vitest Analyst`** para ejecutar el generador determinista (`generate-diagnosis-report.mjs`), evaluar si basta con el schematic oficial (`ng g @schematics/angular:refactor-jasmine-vitest`) y emitir `01-diagnosis-report.json`, `01-diagnosis-report.md` y `01-diagnosis-report.html`.
+* **Presentación al usuario:** Muestra siempre los KPIs clave, la distribución de complejidad (Baja/Media/Alta) y sugiere abrir el dashboard visual `.migration-artifacts/karma-to-vitest/01-diagnosis-report.html` para inspección ejecutiva.
 * **Decisiones obligatorias tras la Fase 1 (según `status` y `recommendedStrategy`):**
   1. **`status: "BLOCKED"` (`recommendedStrategy: "UPGRADE_FIRST"`):**
      * **Detén el flujo por completo.** No ofrezcas ni habilites la Fase 2 ni la Fase 3.

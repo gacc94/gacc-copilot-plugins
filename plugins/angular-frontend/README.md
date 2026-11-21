@@ -46,7 +46,7 @@ Solo aparece **1 agente visible** en el selector de Copilot Chat; los otros **3 
 | Agente | Visibilidad en `Agents` | Rol a alto nivel |
 | :--- | :---: | :--- |
 | **`Angular Karma-to-Vitest`** (`karma-vitest-orchestrator`) | **Visible en el selector** | Punto de entrada único para el desarrollador. Coordina las 3 fases, utiliza **`#vscode/askQuestions`** para preguntas/confirmaciones interactivas en Copilot Chat, bloquea el avance ante `BLOCKED` y exige aprobación humana en cada checkpoint. |
-| **`Karma-Vitest Analyst`** (`karma-vitest-analyst`) | Subagente interno | **Fase 1 (Diagnóstico y Estrategia):** Evalúa si el repositorio cumple Angular 21+ (`READY` vs `BLOCKED`), determina si basta el schematic oficial (`ng g @schematics/angular:refactor-jasmine-vitest`) o si se requiere estrategia híbrida, y genera `.migration-artifacts/karma-to-vitest/01-diagnosis-report.{json,md}` sin tocar código fuente. |
+| **`Karma-Vitest Analyst`** (`karma-vitest-analyst`) | Subagente interno | **Fase 1 (Diagnóstico Visual + Estructurado):** Ejecuta `generate-diagnosis-report.mjs` sin tocar código fuente para evaluar Angular 21+ (`READY` vs `BLOCKED`), clasificar si basta el schematic oficial (`ng g @schematics/angular:refactor-jasmine-vitest`) y generar `.migration-artifacts/karma-to-vitest/01-diagnosis-report.{json,md,html}` con 0 gasto de tokens extra para el dashboard HTML. |
 | **`Karma-Vitest Planner`** (`karma-vitest-planner`) | Subagente interno | **Fase 2 (Planificación):** Tras la aprobación del diagnóstico, genera el plan ejecutable paso a paso en `02-migration-plan.{json,md}`. |
 | **`Karma-Vitest Migrator`** (`karma-vitest-migrator`) | Subagente interno | **Fase 3 (Implementación):** Protegido por el hook `preToolUse` y el gate de artefactos; aplica estrictamente los pasos del plan aprobado cuando ambos artefactos previos están en estado `APPROVED`. |
 
@@ -57,7 +57,7 @@ Solo aparece **1 agente visible** en el selector de Copilot Chat; los otros **3 
 Las skills encapsulan las reglas, esquemas y scripts deterministas en Node.js que cargan los agentes bajo demanda (`user-invocable: false`):
 
 * **`angular-migration-prereqs`**: Ejecuta `scripts/check-prereqs.mjs` para inspeccionar `package.json`, `angular.json`, `karma.conf.js` y `*.spec.ts`, clasificando la estrategia en **`UPGRADE_FIRST`** (`BLOCKED` si Angular `< 21`), **`OFFICIAL_SCHEMATIC_SUFFICIENT`** (basta el schematic oficial de Angular) o **`HYBRID_SCHEMATIC_PLUS_AGENT`** (requiere Fase 2 y Fase 3 del plugin).
-* **`karma-vitest-audit`**: Define la estructura y los JSON Schemas de los artefactos (`01-diagnosis-report.json` y `02-migration-plan.json`), así como el catálogo de equivalencias de Jasmine/Karma a Vitest.
+* **`karma-vitest-audit`**: Incluye `scripts/generate-diagnosis-report.mjs` (que genera en una sola corrida local `01-diagnosis-report.json`, `01-diagnosis-report.md` y el dashboard visual autocontenido `01-diagnosis-report.html` con KPIs, hallazgos, barras Baja/Media/Alta, buscador de specs y hoja de ruta), además de los JSON Schemas y equivalencias Jasmine → Vitest.
 * **`karma-vitest-migrate`**: Contiene las reglas de transformación determinista y el validador `scripts/verify-artifacts-gate.mjs` (usado tanto por CLI como mediante un **agent-scoped hook** `preToolUse` en `karma-vitest-migrator.agent.md`) que impide modificar archivos del proyecto durante la Fase 3 si el diagnóstico o el plan no existen o no han sido aprobados por el especialista, sin bloquear la Fase 1 ni la Fase 2.
 
 ---

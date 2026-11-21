@@ -1,7 +1,7 @@
 {
   "name": "angular-frontend",
   "description": "Plugin de Angular para VS Code Copilot Chat: diagnóstico de elegibilidad, generación de plan ejecutable y migración determinista de Jasmine/Karma a Vitest",
-  "version": "1.0.1",
+  "version": "1.1.0",
   "author": {
     "name": "GACC"
   },

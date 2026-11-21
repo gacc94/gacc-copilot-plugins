@@ -12,17 +12,22 @@
     "strategyReasons",
     "officialSchematic",
     "summary",
+    "metrics",
+    "findings",
+    "complexityBreakdown",
     "detected",
     "complexitySignals",
     "requirements",
     "blockers",
     "specInventory",
+    "roadmap",
+    "generatedFiles",
     "approval"
   ],
   "properties": {
     "schemaVersion": {
       "type": "string",
-      "const": "1.1.0"
+      "const": "1.2.0"
     },
     "evaluatedAt": {
       "type": "string",
@@ -62,20 +67,69 @@
     "summary": {
       "type": "string"
     },
+    "metrics": {
+      "type": "object",
+      "required": ["specFileCount", "angularProjectCount", "lowComplexityPct", "needsReviewPct"],
+      "properties": {
+        "specFileCount": { "type": "integer", "minimum": 0 },
+        "angularProjectCount": { "type": "integer", "minimum": 0 },
+        "lowComplexityPct": { "type": "integer", "minimum": 0, "maximum": 100 },
+        "needsReviewPct": { "type": "integer", "minimum": 0, "maximum": 100 }
+      }
+    },
+    "findings": {
+      "type": "object",
+      "required": ["jasmineApiUsages", "fakeAsyncTickUsages", "customKarmaConfigs", "dependenciesToReview"],
+      "properties": {
+        "jasmineApiUsages": { "type": "integer", "minimum": 0 },
+        "fakeAsyncTickUsages": { "type": "integer", "minimum": 0 },
+        "customKarmaConfigs": { "type": "integer", "minimum": 0 },
+        "dependenciesToReview": {
+          "type": "array",
+          "items": { "type": "string" }
+        }
+      }
+    },
+    "complexityBreakdown": {
+      "type": "object",
+      "required": ["low", "medium", "high"],
+      "properties": {
+        "low": {
+          "type": "object",
+          "required": ["count", "percentage"],
+          "properties": {
+            "count": { "type": "integer", "minimum": 0 },
+            "percentage": { "type": "integer", "minimum": 0, "maximum": 100 }
+          }
+        },
+        "medium": {
+          "type": "object",
+          "required": ["count", "percentage"],
+          "properties": {
+            "count": { "type": "integer", "minimum": 0 },
+            "percentage": { "type": "integer", "minimum": 0, "maximum": 100 }
+          }
+        },
+        "high": {
+          "type": "object",
+          "required": ["count", "percentage"],
+          "properties": {
+            "count": { "type": "integer", "minimum": 0 },
+            "percentage": { "type": "integer", "minimum": 0, "maximum": 100 }
+          }
+        }
+      }
+    },
     "detected": {
       "type": "object",
-      "required": [
-        "angularCoreVersion",
-        "nodeVersion",
-        "testBuilder",
-        "specFileCount"
-      ],
+      "required": ["angularCoreVersion", "nodeVersion", "testBuilder", "specFileCount"],
       "properties": {
         "projectName": { "type": ["string", "null"] },
         "angularCoreVersion": { "type": ["string", "null"] },
         "angularCliVersion": { "type": ["string", "null"] },
         "nodeVersion": { "type": "string" },
         "testBuilder": { "type": ["string", "null"] },
+        "angularProjectCount": { "type": "integer", "minimum": 0 },
         "testTargetCount": { "type": "integer", "minimum": 0 },
         "hasKarmaDeps": { "type": "boolean" },
         "hasJasmineDeps": { "type": "boolean" },
@@ -85,11 +139,7 @@
     },
     "complexitySignals": {
       "type": "object",
-      "required": [
-        "customKarmaConfig",
-        "multiProjectTestTargets",
-        "complexSpecPatterns"
-      ],
+      "required": ["customKarmaConfig", "multiProjectTestTargets", "complexSpecPatterns"],
       "properties": {
         "customKarmaConfig": { "type": "boolean" },
         "customKarmaFeatures": {
@@ -124,10 +174,7 @@
       "properties": {
         "minStableAngularVersion": { "type": "string", "const": "21.0.0" },
         "requiredNodeRange": { "type": "string" },
-        "targetBuilder": {
-          "type": "string",
-          "const": "@angular/build:unit-test"
-        },
+        "targetBuilder": { "type": "string", "const": "@angular/build:unit-test" },
         "targetRunner": { "type": "string", "const": "vitest" }
       }
     },
@@ -148,18 +195,42 @@
       "type": "array",
       "items": {
         "type": "object",
-        "required": ["file", "jasminePatterns", "complexity"],
+        "required": ["file", "jasminePatterns", "jasmineApiCount", "fakeAsyncTickCount", "complexity"],
         "properties": {
           "file": { "type": "string" },
           "jasminePatterns": {
             "type": "array",
             "items": { "type": "string" }
           },
+          "jasmineApiCount": { "type": "integer", "minimum": 0 },
+          "fakeAsyncTickCount": { "type": "integer", "minimum": 0 },
           "complexity": {
             "type": "string",
             "enum": ["low", "medium", "high"]
           }
         }
+      }
+    },
+    "roadmap": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["step", "phase", "description", "state"],
+        "properties": {
+          "step": { "type": "integer", "minimum": 0 },
+          "phase": { "type": "string" },
+          "description": { "type": "string" },
+          "state": { "type": "string", "enum": ["BLOCKING", "LOCKED", "COMPLETED", "PENDING"] }
+        }
+      }
+    },
+    "generatedFiles": {
+      "type": "object",
+      "required": ["json", "markdown", "html"],
+      "properties": {
+        "json": { "type": "string" },
+        "markdown": { "type": "string" },
+        "html": { "type": "string" }
       }
     },
     "approval": {

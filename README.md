@@ -93,7 +93,7 @@ Para iterar rápidamente sobre un plugin local sin reinstalarlo desde el catálo
 
 | Plugin | Ruta (`source`) | Versión | Descripción | Documentación |
 | :--- | :--- | :---: | :--- | :--- |
-| **`angular-frontend`** | `./plugins/angular-frontend` | `1.0.1` | Diagnóstico, planificación ejecutable y migración determinista de Jasmine/Karma a Vitest (Angular 21+). | [Ver README](./plugins/angular-frontend/README.md) |
+| **`angular-frontend`** | `./plugins/angular-frontend` | `1.1.0` | Diagnóstico visual/estructurado (`.json`, `.md`, `.html`), planificación ejecutable y migración determinista de Karma a Vitest (Angular 21+). | [Ver README](./plugins/angular-frontend/README.md) |
 
 ---
 
