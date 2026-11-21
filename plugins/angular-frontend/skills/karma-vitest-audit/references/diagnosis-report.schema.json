@@ -8,8 +8,12 @@
     "evaluatedAt",
     "projectPath",
     "status",
+    "recommendedStrategy",
+    "strategyReasons",
+    "officialSchematic",
     "summary",
     "detected",
+    "complexitySignals",
     "requirements",
     "blockers",
     "specInventory",
@@ -18,7 +22,7 @@
   "properties": {
     "schemaVersion": {
       "type": "string",
-      "const": "1.0.0"
+      "const": "1.1.0"
     },
     "evaluatedAt": {
       "type": "string",
@@ -30,6 +34,30 @@
     "status": {
       "type": "string",
       "enum": ["READY", "BLOCKED"]
+    },
+    "recommendedStrategy": {
+      "type": "string",
+      "enum": [
+        "UPGRADE_FIRST",
+        "OFFICIAL_SCHEMATIC_SUFFICIENT",
+        "HYBRID_SCHEMATIC_PLUS_AGENT"
+      ]
+    },
+    "strategyReasons": {
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "officialSchematic": {
+      "type": "object",
+      "required": ["command", "sufficient", "notes"],
+      "properties": {
+        "command": {
+          "type": "string",
+          "const": "ng g @schematics/angular:refactor-jasmine-vitest"
+        },
+        "sufficient": { "type": "boolean" },
+        "notes": { "type": "string" }
+      }
     },
     "summary": {
       "type": "string"
@@ -48,10 +76,46 @@
         "angularCliVersion": { "type": ["string", "null"] },
         "nodeVersion": { "type": "string" },
         "testBuilder": { "type": ["string", "null"] },
+        "testTargetCount": { "type": "integer", "minimum": 0 },
         "hasKarmaDeps": { "type": "boolean" },
         "hasJasmineDeps": { "type": "boolean" },
         "hasKarmaConf": { "type": "boolean" },
         "specFileCount": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "complexitySignals": {
+      "type": "object",
+      "required": [
+        "customKarmaConfig",
+        "multiProjectTestTargets",
+        "complexSpecPatterns"
+      ],
+      "properties": {
+        "customKarmaConfig": { "type": "boolean" },
+        "customKarmaFeatures": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "multiProjectTestTargets": { "type": "boolean" },
+        "hasCustomTargetOptions": { "type": "boolean" },
+        "complexSpecPatterns": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "complexSpecFiles": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["file", "patterns"],
+            "properties": {
+              "file": { "type": "string" },
+              "patterns": {
+                "type": "array",
+                "items": { "type": "string" }
+              }
+            }
+          }
+        }
       }
     },
     "requirements": {
