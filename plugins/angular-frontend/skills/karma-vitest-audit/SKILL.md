@@ -7,12 +7,16 @@ user-invocable: false
 
 Esta skill centraliza la auditoría determinista de proyectos Angular con Jasmine/Karma y la generación de los artefactos de **Fase 1 (Diagnóstico Visual + Estructurado)** y **Fase 2 (Plan de Migración Ejecutable)**.
 
-## 1. Generador Determinista de Fase 1 (`generate-diagnosis-report.mjs`)
+## 1. Generador Determinista de Fase 1 (`scripts/generate-diagnosis-report.mjs`)
 
-En lugar de que el modelo lea decenas de `*.spec.ts` y redacte los reportes token por token, ejecuta **un único script local en Node.js ESM** (sin dependencias externas y con **0 gasto de tokens extra para el HTML**):
+En lugar de que el modelo lea decenas de `*.spec.ts` y redacte los reportes token por token, resuelve el script `scripts/generate-diagnosis-report.mjs` **directamente junto al archivo `SKILL.md` de esta skill** (sin adivinar rutas del plugin) y ejecútalo en una sola llamada local en Node.js ESM (0 dependencias externas, 0 tokens extra para el HTML):
 
 ```bash
-node "<ruta-del-plugin>/skills/karma-vitest-audit/scripts/generate-diagnosis-report.mjs" --project "."
+# Workspace completo:
+node "<directorio-de-esta-skill>/scripts/generate-diagnosis-report.mjs" --project "."
+
+# Proyecto específico dentro de un monorepo angular.json:
+node "<directorio-de-esta-skill>/scripts/generate-diagnosis-report.mjs" --project "." --angular-project "<nombre-proyecto>"
 ```
 
 ### Artefactos generados automáticamente en `.migration-artifacts/karma-to-vitest/`

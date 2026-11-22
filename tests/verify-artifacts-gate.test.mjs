@@ -1,9 +1,9 @@
-import test from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import test from 'node:test';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const THIS_DIR = path.dirname(fileURLToPath(import.meta.url));
@@ -56,6 +56,12 @@ function writeArtifacts(projectDir, { diag, plan } = {}) {
   }
 }
 
+function approveDiagnosisOnly(projectDir) {
+  writeArtifacts(projectDir, {
+    diag: { status: 'READY', approval: { status: 'APPROVED' } },
+  });
+}
+
 function approveWorkflow(projectDir) {
   writeArtifacts(projectDir, {
     diag: { status: 'READY', approval: { status: 'APPROVED' } },
@@ -69,16 +75,16 @@ function runCliGate(projectDir, phase) {
   });
 }
 
-function runHookGate(payload, defaultProjectDir) {
+function runHookGate(payload, defaultProjectDir, phase = 'migrate') {
   const stdin = typeof payload === 'string' ? payload : JSON.stringify(payload);
-  const res = spawnSync(
-    process.execPath,
-    [GATE_SCRIPT, '--hook', '--project', defaultProjectDir],
-    {
-      input: stdin,
-      encoding: 'utf8',
-    }
-  );
+  const args = [GATE_SCRIPT, '--hook', '--project', defaultProjectDir];
+  if (phase !== undefined) {
+    args.push('--phase', phase);
+  }
+  const res = spawnSync(process.execPath, args, {
+    input: stdin,
+    encoding: 'utf8',
+  });
   assert.equal(res.status, 0, `Hook must exit 0, got ${res.status}. stderr: ${res.stderr}`);
   return JSON.parse(res.stdout.trim());
 }
@@ -121,9 +127,7 @@ test('CLI Gate: enforces diagnosis and plan approval lifecycle', () => {
     assert.equal(runCliGate(dir, 'plan').status, 1);
     assert.equal(runCliGate(dir, 'migrate').status, 1);
 
-    writeArtifacts(dir, {
-      diag: { status: 'READY', approval: { status: 'APPROVED' } },
-    });
+    approveDiagnosisOnly(dir);
     assert.equal(runCliGate(dir, 'plan').status, 0);
     assert.equal(runCliGate(dir, 'migrate').status, 1);
 
@@ -137,9 +141,7 @@ test('CLI Gate: enforces diagnosis and plan approval lifecycle', () => {
     });
     assert.equal(runCliGate(dir, 'migrate').status, 1);
 
-    writeArtifacts(dir, {
-      plan: { approval: { status: 'APPROVED' }, tasks: [{ id: 'T1' }] },
-    });
+    approveWorkflow(dir);
     assert.equal(runCliGate(dir, 'migrate').status, 0);
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
@@ -152,12 +154,18 @@ test('CLI Gate: enforces diagnosis and plan approval lifecycle', () => {
 test('Hook (NO_DECISION): emits {} ONLY for documented Copilot runtime read-only tools', () => {
   const dir = createTempWorkspace();
   try {
-    for (const toolName of ['view', 'glob', 'grep', 'ask_user', 'web_fetch', 'update_todo']) {
-      const out = runHookGate(
-        { sessionId: 'sess-1', timestamp: Date.now(), cwd: dir, toolName, toolArgs: {} },
-        dir
-      );
-      assertNoDecision(out, `Documented runtime read-only tool "${toolName}" should return NO_DECISION ({})`);
+    for (const phase of ['plan', 'migrate']) {
+      for (const toolName of ['view', 'glob', 'grep', 'ask_user', 'web_fetch', 'update_todo']) {
+        const out = runHookGate(
+          { sessionId: 'sess-1', timestamp: Date.now(), cwd: dir, toolName, toolArgs: {} },
+          dir,
+          phase
+        );
+        assertNoDecision(
+          out,
+          `Documented runtime read-only tool "${toolName}" (phase=${phase}) should return NO_DECISION ({})`
+        );
+      }
     }
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
@@ -167,12 +175,14 @@ test('Hook (NO_DECISION): emits {} ONLY for documented Copilot runtime read-only
 test('Hook (Unconditional DENY): blocks invalid input, unknown tools, aliases, and task delegation EVEN when workflow is APPROVED', () => {
   const dir = createTempWorkspace();
   try {
-    // CRITICAL: approve the workflow FIRST to prove these are unconditional DENYs (not REQUIRE_GATE)
     approveWorkflow(dir);
 
-    // 1. Invalid stdin / corrupt JSON / missing camelCase toolName / snake_case partial payload
     assertDenied(runHookGate('', dir), 'Empty stdin must unconditionally DENY even with approved workflow');
     assertDenied(runHookGate('{corrupt-json', dir), 'Corrupt JSON must unconditionally DENY even with approved workflow');
+    assertDenied(
+      runHookGate({ cwd: dir, toolName: 'view', toolArgs: {} }, dir, 'invalid-phase'),
+      'Invalid --phase must unconditionally DENY'
+    );
     assertDenied(
       runHookGate({ cwd: dir, toolArgs: { path: 'src/app.component.ts' } }, dir),
       'Missing toolName must unconditionally DENY'
@@ -182,7 +192,6 @@ test('Hook (Unconditional DENY): blocks invalid input, unknown tools, aliases, a
       'snake_case Local payload without camelCase toolName must DENY under strict preToolUse contract'
     );
 
-    // 2. Unknown runtime tools and frontmatter configuration aliases must NEVER pass even when approved
     for (const disallowedTool of [
       'custom_mutator',
       'read',
@@ -202,56 +211,169 @@ test('Hook (Unconditional DENY): blocks invalid input, unknown tools, aliases, a
       );
     }
 
-    // 3. Delegation via `task` inside Migrator (trying to spawn a subagent to edit src/app.component.ts)
-    assertDenied(
-      runHookGate(
-        {
-          sessionId: 'sess-1',
-          cwd: dir,
-          toolName: 'task',
-          toolArgs: { prompt: 'Edit src/app.component.ts to migrate specs' },
-        },
-        dir
-      ),
-      'Delegation via "task" inside Migrator must be unconditionally DENIED'
-    );
-  } finally {
-    fs.rmSync(dir, { recursive: true, force: true });
-  }
-});
-
-test('Hook (REQUIRE_GATE): denies workspace edits/commands before approval and returns NO_DECISION after approval', () => {
-  const dir = createTempWorkspace();
-  try {
-    const editEvent = {
-      sessionId: 'sess-1',
-      cwd: dir,
-      toolName: 'edit',
-      toolArgs: { path: 'src/app.component.ts', new_str: 'export class Updated {}' },
-    };
-    const bashEvent = {
-      sessionId: 'sess-1',
-      cwd: dir,
-      toolName: 'bash',
-      // Defensive test: stringified JSON toolArgs (schema types toolArgs as unknown)
-      toolArgs: JSON.stringify({ command: 'npx ng test --watch=false' }),
-    };
-
-    // Before approval -> DENY
-    assertDenied(runHookGate(editEvent, dir), 'Workspace edit must be denied before approval');
-    assertDenied(runHookGate(bashEvent, dir), 'Workspace bash command must be denied before approval');
-
-    // After approval -> NO_DECISION ({})
-    approveWorkflow(dir);
-    assertNoDecision(runHookGate(editEvent, dir), 'Workspace edit should return NO_DECISION after approval');
-    assertNoDecision(runHookGate(bashEvent, dir), 'Workspace bash command should return NO_DECISION after approval');
+    for (const phase of ['plan', 'migrate']) {
+      assertDenied(
+        runHookGate(
+          {
+            sessionId: 'sess-1',
+            cwd: dir,
+            toolName: 'task',
+            toolArgs: { prompt: 'Edit src/app.component.ts to migrate specs' },
+          },
+          dir,
+          phase
+        ),
+        `Delegation via "task" (phase=${phase}) must be unconditionally DENIED`
+      );
+    }
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }
 });
 
 // =============================================================================
-// 3. Shell Hardening: Executable validation, trusted script realpath, --project boundary
+// 3. Phase 2 Planner Hook (--hook --phase plan): Read-Only on Source, Plan Artifacts Only
+// =============================================================================
+test('Hook (Planner --phase plan): blocks source edits, arbitrary shell, and diagnosis tampering; allows ONLY 02-migration-plan.* after diagnosis approval', () => {
+  const dir = createTempWorkspace();
+  try {
+    const writePlanJson = {
+      cwd: dir,
+      toolName: 'create',
+      toolArgs: { path: '.migration-artifacts/karma-to-vitest/02-migration-plan.json', content: '{}' },
+    };
+    const writePlanMd = {
+      cwd: dir,
+      toolName: 'create',
+      toolArgs: { path: '.migration-artifacts/karma-to-vitest/02-migration-plan.md', content: '# Plan' },
+    };
+
+    // Before diagnosis approval -> writing plan is DENIED
+    assertDenied(runHookGate(writePlanJson, dir, 'plan'), 'Planner cannot write plan before diagnosis is APPROVED');
+    assertDenied(runHookGate(writePlanMd, dir, 'plan'), 'Planner cannot write plan md before diagnosis is APPROVED');
+
+    // Trusted plugin script is allowed in Planner even before approval
+    assertNoDecision(
+      runHookGate(
+        {
+          cwd: dir,
+          toolName: 'bash',
+          toolArgs: { command: `node "${GATE_SCRIPT}" --project "." --phase plan` },
+        },
+        dir,
+        'plan'
+      ),
+      'Planner may execute verify-artifacts-gate.mjs --phase plan'
+    );
+
+    // Approve diagnosis ONLY -> Planner can now write 02-migration-plan.{json,md}
+    approveDiagnosisOnly(dir);
+    assertNoDecision(runHookGate(writePlanJson, dir, 'plan'), 'Planner may write 02-migration-plan.json after diagnosis approval');
+    assertNoDecision(runHookGate(writePlanMd, dir, 'plan'), 'Planner may write 02-migration-plan.md after diagnosis approval');
+
+    // Even with FULL workflow approval, Planner is NEVER allowed to touch source files, diagnosis artifacts, other artifacts, or arbitrary shell
+    approveWorkflow(dir);
+    assertDenied(
+      runHookGate(
+        { cwd: dir, toolName: 'edit', toolArgs: { path: 'src/app.component.ts', new_str: '// edit' } },
+        dir,
+        'plan'
+      ),
+      'Planner must NEVER edit source code'
+    );
+    assertDenied(
+      runHookGate(
+        { cwd: dir, toolName: 'edit', toolArgs: { path: 'package.json', new_str: '{}' } },
+        dir,
+        'plan'
+      ),
+      'Planner must NEVER edit package.json'
+    );
+    assertDenied(
+      runHookGate(
+        {
+          cwd: dir,
+          toolName: 'edit',
+          toolArgs: { path: '.migration-artifacts/karma-to-vitest/01-diagnosis-report.json', new_str: '{}' },
+        },
+        dir,
+        'plan'
+      ),
+      'Planner must NEVER edit/self-approve 01-diagnosis-report.json'
+    );
+    assertDenied(
+      runHookGate(
+        { cwd: dir, toolName: 'bash', toolArgs: { command: 'npm install vitest' } },
+        dir,
+        'plan'
+      ),
+      'Planner must NEVER run arbitrary shell commands'
+    );
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+// =============================================================================
+// 4. Phase 3 Migrator Hook (--hook --phase migrate): Anti-Self-Approval + REQUIRE_GATE
+// =============================================================================
+test('Hook (Migrator --phase migrate): prevents self-approval of diagnosis/plan and gates workspace mutations', () => {
+  const dir = createTempWorkspace();
+  try {
+    approveDiagnosisOnly(dir);
+    writeArtifacts(dir, {
+      plan: { approval: { status: 'PENDING' }, tasks: [{ id: 'T1' }] },
+    });
+
+    const editSrc = {
+      sessionId: 'sess-1',
+      cwd: dir,
+      toolName: 'edit',
+      toolArgs: { path: 'src/app.component.ts', new_str: 'export class Updated {}' },
+    };
+    const editPlan = {
+      sessionId: 'sess-1',
+      cwd: dir,
+      toolName: 'edit',
+      toolArgs: { path: '.migration-artifacts/karma-to-vitest/02-migration-plan.json', new_str: '{"approval":{"status":"APPROVED"}}' },
+    };
+    const editDiagnosis = {
+      sessionId: 'sess-1',
+      cwd: dir,
+      toolName: 'edit',
+      toolArgs: { path: '.migration-artifacts/karma-to-vitest/01-diagnosis-report.json', new_str: '{}' },
+    };
+    const bashTest = {
+      sessionId: 'sess-1',
+      cwd: dir,
+      toolName: 'bash',
+      toolArgs: JSON.stringify({ command: 'npx ng test --watch=false' }),
+    };
+
+    // Before plan approval -> ALL mutations (including self-approving 02-migration-plan.json) are DENIED
+    assertDenied(runHookGate(editSrc, dir, 'migrate'), 'Workspace edit must be denied before plan approval');
+    assertDenied(runHookGate(editPlan, dir, 'migrate'), 'Migrator must NOT edit/self-approve 02-migration-plan.json before approval');
+    assertDenied(runHookGate(editDiagnosis, dir, 'migrate'), 'Migrator must NOT edit 01-diagnosis-report.json');
+    assertDenied(runHookGate(bashTest, dir, 'migrate'), 'Workspace bash command must be denied before plan approval');
+
+    // After full approval -> workspace edits, updating task status in 02-migration-plan.json, and ng test return NO_DECISION
+    approveWorkflow(dir);
+    assertNoDecision(runHookGate(editSrc, dir, 'migrate'), 'Workspace edit should return NO_DECISION after approval');
+    assertNoDecision(runHookGate(editPlan, dir, 'migrate'), 'Updating 02-migration-plan.json task status should return NO_DECISION after approval');
+    assertNoDecision(runHookGate(bashTest, dir, 'migrate'), 'Workspace bash command should return NO_DECISION after approval');
+
+    // Phase 1 diagnosis artifacts remain IMMUTABLE even after full approval
+    assertDenied(
+      runHookGate(editDiagnosis, dir, 'migrate'),
+      '01-diagnosis-report.json must remain immutable even after workflow approval'
+    );
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+// =============================================================================
+// 5. Shell Hardening: Executable validation, trusted script realpath, --project & --angular-project
 // =============================================================================
 test('Hook Security (Shell): enforces executable, realpath script allowlist, closed grammar, and workspace --project', () => {
   const dir = createTempWorkspace();
@@ -261,17 +383,16 @@ test('Hook Security (Shell): enforces executable, realpath script allowlist, clo
   fs.writeFileSync(fakeDiagnosis, 'console.log("evil");\n');
 
   try {
-    // 1. Legitimate script using absolute process.execPath (preferred) and bare `node` (PATH-trusted)
     assertNoDecision(
       runHookGate(
         {
           cwd: dir,
           toolName: 'bash',
-          toolArgs: { command: `"${process.execPath}" "${DIAGNOSIS_SCRIPT}" --project "."` },
+          toolArgs: { command: `"${process.execPath}" "${DIAGNOSIS_SCRIPT}" --project "." --angular-project "admin-app"` },
         },
         dir
       ),
-      'Trusted script invoked via process.execPath must return NO_DECISION'
+      'Trusted generate-diagnosis-report.mjs with --angular-project must return NO_DECISION'
     );
 
     assertNoDecision(
@@ -298,7 +419,6 @@ test('Hook Security (Shell): enforces executable, realpath script allowlist, clo
       'Trusted script via powershell pointing to workspace root must return NO_DECISION'
     );
 
-    // 2. Relative node binary (./node), Node flags before script (-e / -r), or fake script path -> DENY
     const badExecOrScript = [
       `./node "${PREREQS_SCRIPT}" --project "."`,
       `node -e "process.exit(0)" "${PREREQS_SCRIPT}"`,
@@ -312,7 +432,6 @@ test('Hook Security (Shell): enforces executable, realpath script allowlist, clo
       );
     }
 
-    // 3. --project pointing outside the current workspace -> DENY
     const outsideProjectCommands = [
       `node "${DIAGNOSIS_SCRIPT}" --project "${otherRepoDir}"`,
       `node "${DIAGNOSIS_SCRIPT}" --project ".."`,
@@ -325,7 +444,6 @@ test('Hook Security (Shell): enforces executable, realpath script allowlist, clo
       );
     }
 
-    // 4. Variables, operators, escapes, backslashes on POSIX, unbalanced quotes -> DENY
     const dangerousShellCommands = [
       `node "${PREREQS_SCRIPT}" --project $HOME`,
       `node "${PREREQS_SCRIPT}" --project \${HOME}`,
@@ -353,7 +471,6 @@ test('Hook Security (Shell): enforces executable, realpath script allowlist, clo
       );
     }
 
-    // 5. Invalid, duplicate, or incomplete script arguments -> DENY
     const invalidContractCommands = [
       `node "${PREREQS_SCRIPT}" --project`,
       `node "${PREREQS_SCRIPT}" --project . --project .`,
@@ -361,6 +478,8 @@ test('Hook Security (Shell): enforces executable, realpath script allowlist, clo
       `node "${PREREQS_SCRIPT}" extra-positional`,
       `node "${GATE_SCRIPT}" --phase invalid`,
       `node "${DIAGNOSIS_SCRIPT}" --phase plan`,
+      `node "${DIAGNOSIS_SCRIPT}" --angular-project ../escape`,
+      `node "${PREREQS_SCRIPT}" --angular-project app`,
     ];
     for (const cmd of invalidContractCommands) {
       assertDenied(
@@ -369,7 +488,6 @@ test('Hook Security (Shell): enforces executable, realpath script allowlist, clo
       );
     }
 
-    // 6. Shell event missing command field -> unconditional DENY even when approved
     approveWorkflow(dir);
     assertDenied(
       runHookGate({ cwd: dir, toolName: 'bash', toolArgs: { script: 'echo hi' } }, dir),
@@ -383,7 +501,7 @@ test('Hook Security (Shell): enforces executable, realpath script allowlist, clo
 });
 
 // =============================================================================
-// 4. Per-Tool File Adapters, Symlinks, URIs, Unicode/Spaces, UNC, Out-of-Workspace
+// 6. Per-Tool File Adapters, Symlinks, URIs, Unicode/Spaces, UNC, Out-of-Workspace
 // =============================================================================
 test('Hook Security (Files): per-tool adapters, symlinks, URIs, Unicode, patches, and workspace boundaries', () => {
   const dir = createTempWorkspace();
@@ -391,87 +509,11 @@ test('Hook Security (Files): per-tool adapters, symlinks, URIs, Unicode, patches
   const artDir = path.join(dir, ARTIFACTS_REL);
   fs.mkdirSync(artDir, { recursive: true });
 
-  // Symlink inside artifacts pointing to src/ (inside workspace, escaping artifacts)
   fs.symlinkSync(path.join(dir, 'src'), path.join(artDir, 'escape-src'), 'dir');
-  // Symlink inside artifacts pointing completely outside workspace
   fs.symlinkSync(outsideDir, path.join(artDir, 'escape-outside'), 'dir');
 
   try {
-    // 1. Legitimate artifact operations (relative, file:// URI, spaces + Unicode, ..backup, rename/move/patch)
-    assertNoDecision(
-      runHookGate(
-        {
-          cwd: dir,
-          toolName: 'edit',
-          toolArgs: { path: '.migration-artifacts/karma-to-vitest/02-migration-plan.json', new_str: '{}' },
-        },
-        dir
-      ),
-      'Legitimate edit inside artifacts must return NO_DECISION'
-    );
-
-    assertNoDecision(
-      runHookGate(
-        {
-          cwd: dir,
-          toolName: 'create',
-          toolArgs: {
-            filePath: pathToFileURL(path.join(artDir, '02 plan revisión final.md')).href,
-            content: '# Plan',
-          },
-        },
-        dir
-      ),
-      'Legitimate file:// URI with spaces and Unicode inside artifacts must return NO_DECISION'
-    );
-
-    assertNoDecision(
-      runHookGate(
-        {
-          cwd: dir,
-          toolName: 'create',
-          toolArgs: { path: '.migration-artifacts/karma-to-vitest/..backup.json', content: '{}' },
-        },
-        dir
-      ),
-      'Filename starting with .. inside artifacts (..backup.json) must not false-positive'
-    );
-
-    assertNoDecision(
-      runHookGate(
-        {
-          cwd: dir,
-          toolName: 'move',
-          toolArgs: {
-            sourcePath: '.migration-artifacts/karma-to-vitest/a.json',
-            destinationPath: '.migration-artifacts/karma-to-vitest/b.json',
-          },
-        },
-        dir
-      ),
-      'Move with both source and destination inside artifacts must return NO_DECISION'
-    );
-
-    assertNoDecision(
-      runHookGate(
-        {
-          cwd: dir,
-          toolName: 'apply_patch',
-          toolArgs: {
-            input: [
-              '*** Begin Patch',
-              '*** Update File: .migration-artifacts/karma-to-vitest/02-migration-plan.json',
-              '*** Add File: .migration-artifacts/karma-to-vitest/notes.md',
-              '*** End Patch',
-            ].join('\n'),
-          },
-        },
-        dir
-      ),
-      'Multi-file patch strictly inside artifacts must return NO_DECISION'
-    );
-
-    // 2. Decoy content, path traversal, move escaping artifacts, 2-file patch touching src/ -> DENY before approval
+    // 1. Before approval: path traversal, decoy content, rename/patch escaping -> DENIED
     assertDenied(
       runHookGate(
         {
@@ -530,14 +572,76 @@ test('Hook Security (Files): per-tool adapters, symlinks, URIs, Unicode, patches
         },
         dir
       ),
-      '2-file patch where one file is outside artifacts must be denied before approval'
+      '2-file patch touching workspace before approval must be denied'
+    );
+
+    // 2. Approve workflow -> valid workspace targets (URI with spaces/Unicode, ..backup, move, multi-file patch) return NO_DECISION
+    approveWorkflow(dir);
+
+    assertNoDecision(
+      runHookGate(
+        {
+          cwd: dir,
+          toolName: 'create',
+          toolArgs: {
+            filePath: pathToFileURL(path.join(dir, 'src', 'app revisión final.spec.ts')).href,
+            content: '// spec',
+          },
+        },
+        dir
+      ),
+      'Valid file:// URI with spaces and Unicode inside workspace must return NO_DECISION after approval'
+    );
+
+    assertNoDecision(
+      runHookGate(
+        {
+          cwd: dir,
+          toolName: 'create',
+          toolArgs: { path: '.migration-artifacts/karma-to-vitest/..backup.json', content: '{}' },
+        },
+        dir
+      ),
+      'Filename starting with .. inside artifacts (..backup.json) must not false-positive'
+    );
+
+    assertNoDecision(
+      runHookGate(
+        {
+          cwd: dir,
+          toolName: 'move',
+          toolArgs: {
+            sourcePath: 'src/a.spec.ts',
+            destinationPath: 'src/b.spec.ts',
+          },
+        },
+        dir
+      ),
+      'Move inside workspace must return NO_DECISION after approval'
+    );
+
+    assertNoDecision(
+      runHookGate(
+        {
+          cwd: dir,
+          toolName: 'apply_patch',
+          toolArgs: {
+            input: [
+              '*** Begin Patch',
+              '*** Update File: .migration-artifacts/karma-to-vitest/02-migration-plan.json',
+              '*** Update File: src/app.component.ts',
+              '*** End Patch',
+            ].join('\n'),
+          },
+        },
+        dir
+      ),
+      'Complete 2-file patch inside workspace must return NO_DECISION after approval'
     );
 
     // 3. Unconditional DENYs even AFTER approving the workflow:
     //    symlinks escaping artifacts, out-of-workspace targets, malformed URIs,
     //    incomplete patches, UNC paths, missing destination fields
-    approveWorkflow(dir);
-
     assertDenied(
       runHookGate(
         {
@@ -668,7 +772,70 @@ test('Hook Security (Files): per-tool adapters, symlinks, URIs, Unicode, patches
 });
 
 // =============================================================================
-// 5. Latency Check (supports fail-open timeout risk mitigation)
+// 7. Diagnosis Script: Multi-Project --angular-project Support
+// =============================================================================
+test('Diagnosis Generator: scopes specs and targets when --angular-project is provided', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'gacc-diag-multiproj-'));
+  try {
+    fs.mkdirSync(path.join(dir, 'projects', 'app-a', 'src'), { recursive: true });
+    fs.mkdirSync(path.join(dir, 'projects', 'app-b', 'src'), { recursive: true });
+    fs.writeFileSync(
+      path.join(dir, 'package.json'),
+      JSON.stringify({
+        name: 'angular-monorepo',
+        dependencies: { '@angular/core': '^21.1.0' },
+        devDependencies: { '@angular/cli': '^21.1.0', karma: '^6.4.0' },
+      })
+    );
+    fs.writeFileSync(
+      path.join(dir, 'angular.json'),
+      JSON.stringify({
+        projects: {
+          'app-a': {
+            root: 'projects/app-a',
+            architect: { test: { builder: '@angular-devkit/build-angular:karma', options: {} } },
+          },
+          'app-b': {
+            root: 'projects/app-b',
+            architect: { test: { builder: '@angular-devkit/build-angular:karma', options: {} } },
+          },
+        },
+      })
+    );
+    fs.writeFileSync(path.join(dir, 'projects', 'app-a', 'src', 'a.spec.ts'), 'it("a", () => { jasmine.clock().install(); });\n');
+    fs.writeFileSync(path.join(dir, 'projects', 'app-b', 'src', 'b1.spec.ts'), 'it("b1", () => { expect(true).toBe(true); });\n');
+    fs.writeFileSync(path.join(dir, 'projects', 'app-b', 'src', 'b2.spec.ts'), 'it("b2", () => { expect(1).toBe(1); });\n');
+
+    // Scoped to app-b -> sees only app-b's 2 simple specs (OFFICIAL_SCHEMATIC_SUFFICIENT)
+    const resB = spawnSync(
+      process.execPath,
+      [DIAGNOSIS_SCRIPT, '--project', dir, '--angular-project', 'app-b'],
+      { encoding: 'utf8' }
+    );
+    assert.equal(resB.status, 0, resB.stderr);
+    const summaryB = JSON.parse(resB.stdout.trim());
+    assert.equal(summaryB.status, 'READY');
+    assert.equal(summaryB.recommendedStrategy, 'OFFICIAL_SCHEMATIC_SUFFICIENT');
+    assert.equal(summaryB.metrics.specFileCount, 2);
+    assert.equal(summaryB.metrics.angularProjectCount, 1);
+
+    // Non-existent project -> BLOCKED with ANGULAR_PROJECT_NOT_FOUND
+    const resMissing = spawnSync(
+      process.execPath,
+      [DIAGNOSIS_SCRIPT, '--project', dir, '--angular-project', 'does-not-exist'],
+      { encoding: 'utf8' }
+    );
+    assert.equal(resMissing.status, 0, resMissing.stderr);
+    const summaryMissing = JSON.parse(resMissing.stdout.trim());
+    assert.equal(summaryMissing.status, 'BLOCKED');
+    assert.ok(summaryMissing.blockers.some((b) => b.code === 'ANGULAR_PROJECT_NOT_FOUND'));
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+// =============================================================================
+// 8. Latency Check (supports fail-open timeout risk mitigation)
 // =============================================================================
 test('Hook Performance: completes local gate evaluation well below timeoutSec (10s)', () => {
   const dir = createTempWorkspace();

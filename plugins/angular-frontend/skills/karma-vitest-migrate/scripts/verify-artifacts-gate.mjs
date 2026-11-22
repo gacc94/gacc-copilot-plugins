@@ -7,8 +7,9 @@
  *    node verify-artifacts-gate.mjs --project <dir> --phase <plan|migrate>
  *    Exits with 0 if the required artifacts exist and are APPROVED, or 1 otherwise.
  *
- * 2. Copilot harness preToolUse Hook mode (agent-scoped on karma-vitest-migrator):
- *    node verify-artifacts-gate.mjs --hook [--project <dir>]
+ * 2. Copilot harness preToolUse Hook mode (agent-scoped):
+ *    - Planner (Phase 2):  node verify-artifacts-gate.mjs --hook --phase plan [--project <dir>]
+ *    - Migrator (Phase 3): node verify-artifacts-gate.mjs --hook --phase migrate [--project <dir>]
  *    Reads the Copilot harness preToolUse camelCase event JSON from stdin:
  *      { sessionId, timestamp, cwd, toolName, toolArgs }
  *    Outputs flat Copilot harness JSON to stdout:
@@ -18,23 +19,27 @@
  * Security model (Workflow Level 1 — NOT a replacement for OS sandboxing or org policies):
  * Three explicit decision states:
  *   - DENY (unconditional, never bypassed by workflow approval):
- *       * Invalid/empty stdin, missing toolName, or malformed toolArgs.
+ *       * Invalid/empty stdin, missing toolName, malformed toolArgs, or invalid --phase.
  *       * Unknown runtime toolName (strictly separated from agent frontmatter aliases).
- *       * Subagent delegation via "task" (Migrator is not authorized to spawn subagents).
+ *       * Subagent delegation via "task" (neither Planner nor Migrator may spawn subagents).
  *       * Unverifiable/malformed file targets, non-file URIs, UNC paths, symlink escapes,
  *         or mutations targeting paths outside the workspace root.
+ *       * Phase 1 diagnosis artifacts (01-diagnosis-report.*) are immutable in both
+ *         Planner and Migrator hooks (prevents self-approval).
+ *       * In --phase plan (Planner): ANY file write outside 02-migration-plan.{json,md}
+ *         and ANY shell command outside the 3 trusted plugin scripts.
  *   - NO_DECISION ({}):
  *       * Officially documented read-only/non-mutating runtime tools (view, glob, grep,
  *         ask_user, web_fetch, update_todo).
  *       * Exact invocations of the 3 trusted plugin scripts (verified via canonical
  *         realpath, closed grammar, strict per-script contract, and --project constrained
  *         within the current workspace).
- *       * File mutations where EVERY target resolves strictly inside
- *         <project>/.migration-artifacts/karma-to-vitest.
  *   - REQUIRE_GATE:
- *       * Known shell/file-mutation tools operating inside the workspace: returns
- *         NO_DECISION only when diagnosis (READY+APPROVED) and plan (APPROVED+tasks)
- *         pass validateGate(); otherwise DENY.
+ *       * In --phase plan (Planner): writing 02-migration-plan.{json,md} inside
+ *         .migration-artifacts/karma-to-vitest requires diagnosis READY + APPROVED.
+ *       * In --phase migrate (Migrator): workspace file mutations (including updating
+ *         02-migration-plan.json task status, never before approval) and shell commands
+ *         require diagnosis READY + APPROVED AND plan APPROVED with tasks.
  *
  * Known runtime limitations (documented intentionally):
  *   - Command hook timeouts in Copilot are fail-open (errors/non-zero exit are fail-closed).
@@ -52,8 +57,12 @@ import { fileURLToPath } from 'node:url';
 const ARTIFACTS_SUBDIR = path.join('.migration-artifacts', 'karma-to-vitest');
 const DIAGNOSIS_JSON = '01-diagnosis-report.json';
 const DIAGNOSIS_MD = '01-diagnosis-report.md';
+const DIAGNOSIS_HTML = '01-diagnosis-report.html';
 const PLAN_JSON = '02-migration-plan.json';
 const PLAN_MD = '02-migration-plan.md';
+
+const PHASE1_IMMUTABLE_ARTIFACTS = new Set([DIAGNOSIS_JSON, DIAGNOSIS_MD, DIAGNOSIS_HTML]);
+const PHASE2_WRITABLE_ARTIFACTS = new Set([PLAN_JSON, PLAN_MD]);
 
 const THIS_FILE = fileURLToPath(import.meta.url);
 const PLUGIN_ROOT_DIR = path.resolve(path.dirname(THIS_FILE), '..', '..', '..');
@@ -105,7 +114,7 @@ const READ_ONLY_RUNTIME_TOOLS = new Set([
   'update_todo',
 ]);
 
-// Subagent delegation tool in Copilot runtime: unconditionally denied inside Migrator
+// Subagent delegation tool in Copilot runtime: unconditionally denied inside Planner & Migrator
 const BLOCKED_DELEGATION_TOOLS = new Set(['task']);
 
 // Official shell execution tools in Copilot preToolUse runtime
@@ -117,6 +126,8 @@ const FORBIDDEN_SHELL_CHARS_REGEX =
   process.platform === 'win32'
     ? /[$`%!&|;<>(){}*?~#^\r\n\0]/
     : /[$`%!&|;<>(){}*?~#^\\\r\n\0]/;
+
+const SAFE_ANGULAR_PROJECT_NAME_REGEX = /^[a-zA-Z0-9._/@-]+$/;
 
 function parseArgs(argv) {
   let projectDir = process.cwd();
@@ -298,7 +309,6 @@ function tokenizeClosedCommand(command) {
   if (!trimmed || FORBIDDEN_SHELL_CHARS_REGEX.test(trimmed)) {
     return null;
   }
-  // On Windows, also disallow backslash immediately before a quote to avoid escape ambiguity
   if (process.platform === 'win32' && /\\["']/.test(trimmed)) {
     return null;
   }
@@ -340,7 +350,7 @@ function tokenizeClosedCommand(command) {
   }
 
   if (quote !== null) {
-    return null; // Unbalanced quote
+    return null;
   }
   if (inToken) {
     tokens.push(current);
@@ -385,6 +395,7 @@ function validateScriptContractArgs(scriptName, args, projectDir) {
   let seenProject = false;
   let seenPhase = false;
   let seenHook = false;
+  let seenAngularProject = false;
 
   for (let i = 0; i < args.length; i++) {
     const flag = args[i];
@@ -396,6 +407,22 @@ function validateScriptContractArgs(scriptName, args, projectDir) {
         return false;
       }
       seenProject = true;
+      i++;
+      continue;
+    }
+
+    if (scriptName === 'generate-diagnosis-report.mjs' && flag === '--angular-project') {
+      if (seenAngularProject) return false;
+      const val = args[i + 1];
+      if (
+        !val ||
+        val.startsWith('-') ||
+        val.includes('..') ||
+        !SAFE_ANGULAR_PROJECT_NAME_REGEX.test(val)
+      ) {
+        return false;
+      }
+      seenAngularProject = true;
       i++;
       continue;
     }
@@ -415,7 +442,6 @@ function validateScriptContractArgs(scriptName, args, projectDir) {
       continue;
     }
 
-    // Reject unknown flags, extra positional args, or Node options
     return false;
   }
 
@@ -473,12 +499,10 @@ function normalizeTargetPath(rawTarget) {
     }
   }
 
-  // Reject any non-file URI scheme (http://, vscode-remote://, untitled://, etc.)
   if (/^[a-zA-Z][a-zA-Z0-9+.-]*:\/\//.test(trimmed)) {
     return null;
   }
 
-  // Reject Windows drive-letter paths on POSIX hosts (avoid treating C:\... as relative filename)
   if (process.platform !== 'win32' && /^[a-zA-Z]:[\\/]/.test(trimmed)) {
     return null;
   }
@@ -554,7 +578,7 @@ function extractPatchTargets(argsObj) {
   const hasBegin = lines.some((l) => l.trim() === '*** Begin Patch');
   const hasEnd = lines.some((l) => l.trim() === '*** End Patch');
   if (!hasBegin || !hasEnd) {
-    return null; // Reject incomplete or unrecognized patch envelope
+    return null;
   }
 
   const targets = [];
@@ -563,7 +587,7 @@ function extractPatchTargets(argsObj) {
     if (match) {
       const target = match[2].trim();
       if (!target) {
-        return null; // Incomplete header with empty filename
+        return null;
       }
       targets.push(target);
     }
@@ -584,9 +608,9 @@ const FILE_MUTATION_ADAPTERS = new Map([
 
 /**
  * Classifies a single target path into:
- *   - 'INVALID'            -> malformed path/URI, UNC path, symlink escape from artifacts, or outside workspace
- *   - 'INSIDE_ARTIFACTS'   -> resolves strictly inside <project>/.migration-artifacts/karma-to-vitest
- *   - 'INSIDE_WORKSPACE'   -> resolves inside <project> outside artifacts (requires migration gate)
+ *   - { kind: 'INVALID', reason }
+ *   - { kind: 'INSIDE_ARTIFACTS', artifactRel }
+ *   - { kind: 'INSIDE_WORKSPACE' }
  */
 function classifyTargetPath(rawTarget, projectDir) {
   const normalized = normalizeTargetPath(rawTarget);
@@ -609,7 +633,6 @@ function classifyTargetPath(rawTarget, projectDir) {
     return { kind: 'INVALID', reason: `No se pudo resolver la ruta real para "${rawTarget}".` };
   }
 
-  // Symlink escape detection: lexically claims to be inside artifacts, but realpath escapes artifacts
   const lexicallyInArtifacts = isStrictSubpathOrEqual(artifactsAbs, candidateAbs, { allowEqual: false });
   const reallyInArtifacts = isStrictSubpathOrEqual(artifactsReal, candidateReal, { allowEqual: false });
 
@@ -620,7 +643,6 @@ function classifyTargetPath(rawTarget, projectDir) {
     };
   }
 
-  // Out-of-workspace mutation is unconditionally denied (even with approved workflow)
   const reallyInWorkspace = isStrictSubpathOrEqual(workspaceReal, candidateReal, { allowEqual: false });
   if (!reallyInWorkspace) {
     return {
@@ -630,7 +652,8 @@ function classifyTargetPath(rawTarget, projectDir) {
   }
 
   if (reallyInArtifacts) {
-    return { kind: 'INSIDE_ARTIFACTS' };
+    const artifactRel = path.relative(artifactsReal, candidateReal).replace(/\\/g, '/');
+    return { kind: 'INSIDE_ARTIFACTS', artifactRel };
   }
 
   return { kind: 'INSIDE_WORKSPACE' };
@@ -638,12 +661,18 @@ function classifyTargetPath(rawTarget, projectDir) {
 
 /**
  * Evaluates a preToolUse hook event into one of three explicit outcomes:
- *   - { decision: 'DENY', reason }          -> Unconditional deny (never bypassed by workflow approval)
- *   - { decision: 'NO_DECISION' }           -> Emit {} (delegate to normal harness permission flow)
- *   - { decision: 'REQUIRE_GATE' }          -> Allow NO_DECISION only if validateGate(migrate) passes
+ *   - { decision: 'DENY', reason }               -> Unconditional deny (never bypassed by workflow approval)
+ *   - { decision: 'NO_DECISION' }                -> Emit {} (delegate to normal harness permission flow)
+ *   - { decision: 'REQUIRE_GATE', gatePhase }    -> Allow NO_DECISION only if validateGate(gatePhase) passes
  */
-function evaluateToolCall(event, projectDir) {
-  // 1. Strict camelCase preToolUse event validation
+function evaluateToolCall(event, projectDir, phase) {
+  if (phase !== 'plan' && phase !== 'migrate') {
+    return {
+      decision: 'DENY',
+      reason: `Fase de hook inválida "${phase}" (se esperaba "plan" o "migrate").`,
+    };
+  }
+
   if (!event || typeof event !== 'object' || Array.isArray(event)) {
     return {
       decision: 'DENY',
@@ -660,20 +689,20 @@ function evaluateToolCall(event, projectDir) {
 
   const toolName = event.toolName.trim().toLowerCase();
 
-  // 2. Unconditionally block subagent delegation inside Migrator
+  // Unconditionally block subagent delegation inside Planner and Migrator
   if (BLOCKED_DELEGATION_TOOLS.has(toolName)) {
     return {
       decision: 'DENY',
-      reason: `La herramienta de delegación "${toolName}" está bloqueada dentro de Karma-Vitest Migrator para evitar mutaciones no auditadas en subagentes.`,
+      reason: `La herramienta de delegación "${toolName}" está bloqueada en Fase ${phase === 'plan' ? '2 (Planner)' : '3 (Migrator)'} para evitar mutaciones no auditadas en subagentes.`,
     };
   }
 
-  // 3. Officially documented read-only / non-mutating runtime tools
+  // Officially documented read-only / non-mutating runtime tools
   if (READ_ONLY_RUNTIME_TOOLS.has(toolName)) {
     return { decision: 'NO_DECISION' };
   }
 
-  // 4. Known shell runtime tools (bash, powershell)
+  // Known shell runtime tools (bash, powershell)
   if (SHELL_RUNTIME_TOOLS.has(toolName)) {
     const argsObj = parseToolArgsObject(event);
     const command =
@@ -692,10 +721,18 @@ function evaluateToolCall(event, projectDir) {
       return { decision: 'NO_DECISION' };
     }
 
-    return { decision: 'REQUIRE_GATE' };
+    // Planner is strictly read-only on source code: arbitrary shell commands are unconditionally denied
+    if (phase === 'plan') {
+      return {
+        decision: 'DENY',
+        reason: 'Karma-Vitest Planner solo puede ejecutar scripts oficiales del plugin; los comandos shell arbitrarios están bloqueados en Fase 2.',
+      };
+    }
+
+    return { decision: 'REQUIRE_GATE', gatePhase: 'migrate' };
   }
 
-  // 5. Known file mutation tools with dedicated per-tool adapters
+  // Known file mutation tools with dedicated per-tool adapters
   if (FILE_MUTATION_ADAPTERS.has(toolName)) {
     const argsObj = parseToolArgsObject(event);
     if (!argsObj) {
@@ -714,24 +751,48 @@ function evaluateToolCall(event, projectDir) {
       };
     }
 
-    let allInsideArtifacts = true;
     for (const target of targets) {
       const classification = classifyTargetPath(target, projectDir);
       if (classification.kind === 'INVALID') {
         return { decision: 'DENY', reason: classification.reason };
       }
-      if (classification.kind !== 'INSIDE_ARTIFACTS') {
-        allInsideArtifacts = false;
+
+      // Phase 1 diagnosis artifacts are immutable during both Phase 2 (Planner) and Phase 3 (Migrator)
+      // to prevent self-approval or tampering.
+      if (
+        classification.kind === 'INSIDE_ARTIFACTS' &&
+        PHASE1_IMMUTABLE_ARTIFACTS.has(classification.artifactRel)
+      ) {
+        return {
+          decision: 'DENY',
+          reason: `Los artefactos de diagnóstico de Fase 1 (${classification.artifactRel}) son inmutables y no pueden ser modificados por el agente.`,
+        };
+      }
+
+      // In Phase 2 (Planner): ONLY 02-migration-plan.json and 02-migration-plan.md are writable
+      if (phase === 'plan') {
+        if (
+          classification.kind !== 'INSIDE_ARTIFACTS' ||
+          !PHASE2_WRITABLE_ARTIFACTS.has(classification.artifactRel)
+        ) {
+          return {
+            decision: 'DENY',
+            reason: `Karma-Vitest Planner solo puede escribir ${PLAN_JSON} y ${PLAN_MD} dentro de ${ARTIFACTS_SUBDIR}. Destino bloqueado: "${target}".`,
+          };
+        }
       }
     }
 
-    return allInsideArtifacts ? { decision: 'NO_DECISION' } : { decision: 'REQUIRE_GATE' };
+    // Phase 2 requires diagnosis READY + APPROVED before writing 02-migration-plan.*
+    // Phase 3 requires diagnosis READY + APPROVED AND plan APPROVED before ANY mutation
+    // (including 02-migration-plan.json, preventing Migrator self-approval).
+    return { decision: 'REQUIRE_GATE', gatePhase: phase };
   }
 
-  // 6. Unknown tool -> UNCONDITIONAL DENY (never bypassed by workflow approval)
+  // Unknown tool -> UNCONDITIONAL DENY (never bypassed by workflow approval)
   return {
     decision: 'DENY',
-    reason: `Herramienta desconocida o no autorizada "${event.toolName}" en Karma-Vitest Migrator (default-deny).`,
+    reason: `Herramienta desconocida o no autorizada "${event.toolName}" (default-deny).`,
   };
 }
 
@@ -744,7 +805,7 @@ function emitDeny(reason) {
   );
 }
 
-function runHookMode(defaultProjectDir) {
+function runHookMode(defaultProjectDir, phase) {
   let stdinText = '';
   try {
     stdinText = fs.readFileSync(0, 'utf8').trim();
@@ -766,7 +827,7 @@ function runHookMode(defaultProjectDir) {
       ? path.resolve(event.cwd)
       : defaultProjectDir;
 
-  const evaluation = evaluateToolCall(event, projectDir);
+  const evaluation = evaluateToolCall(event, projectDir, phase);
 
   if (evaluation.decision === 'NO_DECISION') {
     process.stdout.write('{}\n');
@@ -778,8 +839,7 @@ function runHookMode(defaultProjectDir) {
     return;
   }
 
-  // REQUIRE_GATE: authorize NO_DECISION only when workflow artifacts are READY & APPROVED
-  const check = validateGate(projectDir, 'migrate');
+  const check = validateGate(projectDir, evaluation.gatePhase);
   if (check.allowed) {
     process.stdout.write('{}\n');
   } else {
@@ -791,7 +851,7 @@ function main() {
   const { projectDir, phase, isHook } = parseArgs(process.argv);
 
   if (isHook) {
-    runHookMode(projectDir);
+    runHookMode(projectDir, phase);
     return;
   }
 

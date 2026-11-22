@@ -1,7 +1,7 @@
-import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
+import test from 'node:test';
 import { fileURLToPath } from 'node:url';
 
 const THIS_DIR = path.dirname(fileURLToPath(import.meta.url));
@@ -12,6 +12,7 @@ const PLUGIN_ROOT = path.join(REPO_ROOT, 'plugins', 'angular-frontend');
 const PLUGIN_MANIFEST_PATH = path.join(PLUGIN_ROOT, 'plugin.json');
 const AGENTS_DIR = path.join(PLUGIN_ROOT, 'com.github.copilot', 'agents');
 const LEGACY_AGENTS_DIR = path.join(PLUGIN_ROOT, 'agents');
+const SKILLS_DIR = path.join(PLUGIN_ROOT, 'skills');
 
 function readJson(filePath) {
   return JSON.parse(fs.readFileSync(filePath, 'utf8'));
@@ -39,7 +40,6 @@ test('Marketplace: validates full official .github/plugin/marketplace.json contr
 
   const marketplace = readJson(MARKETPLACE_PATH);
 
-  // Validate required marketplace top-level metadata
   assert.match(marketplace.name, /^[a-z0-9]+(?:-[a-z0-9]+)*$/, 'Marketplace name must be kebab-case');
   assert.equal(marketplace.name, 'gacc-copilot-plugins');
   assert.equal(typeof marketplace.owner, 'object');
@@ -48,7 +48,6 @@ test('Marketplace: validates full official .github/plugin/marketplace.json contr
   assert.ok(marketplace.metadata && typeof marketplace.metadata.version === 'string');
   assert.ok(Array.isArray(marketplace.plugins) && marketplace.plugins.length >= 1);
 
-  // Validate every plugin entry resolves and stays version-synchronized with its plugin.json
   for (const entry of marketplace.plugins) {
     assert.ok(typeof entry.name === 'string' && entry.name.length > 0);
     assert.ok(typeof entry.version === 'string' && /^\d+\.\d+\.\d+$/.test(entry.version));
@@ -77,11 +76,11 @@ test('Agent Plugins 1.0: plugin.json declares official schema without legacy com
 
   assert.equal(fs.existsSync(LEGACY_AGENTS_DIR), false, 'Legacy plugins/angular-frontend/agents/ must not exist');
   assert.ok(fs.existsSync(AGENTS_DIR), 'com.github.copilot/agents/ must exist');
-  assert.ok(fs.existsSync(path.join(PLUGIN_ROOT, 'skills')), 'skills/ must remain at plugin root');
+  assert.ok(fs.existsSync(SKILLS_DIR), 'skills/ must remain at plugin root');
 });
 
-test('Schemas: all skill JSON schemas parse cleanly', () => {
-  const schemasDir = path.join(PLUGIN_ROOT, 'skills', 'karma-vitest-audit', 'references');
+test('Schemas and Skills: valid JSON schemas and zero ambiguous <ruta-del-plugin> placeholders', () => {
+  const schemasDir = path.join(SKILLS_DIR, 'karma-vitest-audit', 'references');
   const schemaFiles = fs.readdirSync(schemasDir).filter((f) => f.endsWith('.schema.json'));
   assert.ok(schemaFiles.length >= 2, 'Expected diagnosis and migration plan schemas');
 
@@ -90,9 +89,21 @@ test('Schemas: all skill JSON schemas parse cleanly', () => {
     assert.equal(typeof parsed, 'object');
     assert.ok(parsed.$schema || parsed.type, `${file} must be a valid JSON Schema`);
   }
+
+  for (const skillName of fs.readdirSync(SKILLS_DIR)) {
+    const skillMdPath = path.join(SKILLS_DIR, skillName, 'SKILL.md');
+    if (fs.existsSync(skillMdPath)) {
+      const content = fs.readFileSync(skillMdPath, 'utf8');
+      assert.equal(
+        content.includes('<ruta-del-plugin>'),
+        false,
+        `${skillName}/SKILL.md must resolve scripts relative to SKILL.md, not via <ruta-del-plugin>`
+      );
+    }
+  }
 });
 
-test('Copilot Agents: frontmatter, visibility, subagent names, and agent-scoped preToolUse hook', () => {
+test('Copilot Agents: frontmatter, delegation context, visibility, and agent-scoped preToolUse hooks on Planner & Migrator', () => {
   const agentFiles = fs
     .readdirSync(AGENTS_DIR)
     .filter((f) => f.endsWith('.agent.md'))
@@ -110,6 +121,12 @@ test('Copilot Agents: frontmatter, visibility, subagent names, and agent-scoped 
 
   for (const file of agentFiles) {
     const content = fs.readFileSync(path.join(AGENTS_DIR, file), 'utf8');
+    assert.equal(
+      content.includes('<ruta-del-plugin>'),
+      false,
+      `${file} must not rely on unexpanded <ruta-del-plugin> placeholder`
+    );
+
     const { rawFrontmatter, body } = parseFrontmatter(content);
     const name = getScalarField(rawFrontmatter, 'name');
     const userInvocable = getScalarField(rawFrontmatter, 'user-invocable');
@@ -141,6 +158,16 @@ test('Copilot Agents: frontmatter, visibility, subagent names, and agent-scoped 
   assert.equal(orchestrator.hasHooks, false, 'Orchestrator must not carry migration hooks');
   assert.equal(orchestrator.toolsLine.includes("'edit'"), false, 'Orchestrator must not have edit tool');
   assert.equal(orchestrator.toolsLine.includes("'execute'"), false, 'Orchestrator must not have execute tool');
+  assert.match(
+    orchestrator.body,
+    /Contexto explícito en cada delegación/i,
+    'Orchestrator must instruct explicit context passing to isolated subagents'
+  );
+  assert.match(
+    orchestrator.body,
+    /--angular-project/,
+    'Orchestrator must instruct passing selected angular.json project to Analyst'
+  );
 
   const subagentNames = new Set(
     [...parsedAgents.entries()]
@@ -156,17 +183,28 @@ test('Copilot Agents: frontmatter, visibility, subagent names, and agent-scoped 
     );
   }
 
+  const expectedHookPhases = new Map([
+    ['karma-vitest-planner.agent.md', 'plan'],
+    ['karma-vitest-migrator.agent.md', 'migrate'],
+  ]);
+
   for (const [file, info] of parsedAgents.entries()) {
-    if (file === 'karma-vitest-migrator.agent.md') {
-      assert.equal(info.hasHooks, true, 'Migrator must define agent-scoped hooks');
-      assert.match(info.rawFrontmatter, /^\s+preToolUse:/m, 'Migrator must use Copilot harness preToolUse event');
-      assert.equal(info.toolsLine.includes("'agent'"), false, 'Migrator must not declare delegation tools');
+    const expectedPhase = expectedHookPhases.get(file);
+    if (expectedPhase) {
+      assert.equal(info.hasHooks, true, `${file} must define agent-scoped hooks`);
+      assert.match(info.rawFrontmatter, /^\s+preToolUse:/m, `${file} must use Copilot harness preToolUse event`);
+      assert.equal(info.toolsLine.includes("'agent'"), false, `${file} must not declare delegation tools`);
       const cmdMatch = info.rawFrontmatter.match(/command:\s*(.+)$/m);
-      assert.ok(cmdMatch, 'Migrator hook must specify a command');
+      assert.ok(cmdMatch, `${file} hook must specify a command`);
+      assert.match(
+        cmdMatch[1],
+        new RegExp(`--hook\\s+--phase\\s+${expectedPhase}\\b`),
+        `${file} hook must invoke verify-artifacts-gate.mjs with --hook --phase ${expectedPhase}`
+      );
       const expandedCmd = cmdMatch[1].trim().replace(/\$\{PLUGIN_ROOT\}/g, PLUGIN_ROOT);
       const scriptMatch = expandedCmd.match(/"([^"]+\.mjs)"/);
-      assert.ok(scriptMatch, 'Migrator hook command must reference a .mjs script');
-      assert.ok(fs.existsSync(scriptMatch[1]), `Migrator hook script must exist at ${scriptMatch[1]}`);
+      assert.ok(scriptMatch, `${file} hook command must reference a .mjs script`);
+      assert.ok(fs.existsSync(scriptMatch[1]), `${file} hook script must exist at ${scriptMatch[1]}`);
     } else {
       assert.equal(info.hasHooks, false, `${file} must NOT define migration hooks`);
     }

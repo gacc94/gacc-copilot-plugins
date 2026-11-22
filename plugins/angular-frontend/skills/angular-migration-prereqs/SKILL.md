@@ -29,6 +29,8 @@ El script evalúa además si la solución oficial de Angular (`ng g @schematics/
 
 ## 3. Ejecución del Script Determinista
 
+Resuelve la ruta de `scripts/check-prereqs.mjs` **directamente junto al archivo `SKILL.md` de esta skill** (sin adivinar rutas del plugin):
+
 ```bash
-node "<ruta-del-plugin>/skills/angular-migration-prereqs/scripts/check-prereqs.mjs" --project "<ruta-del-proyecto-angular>"
+node "<directorio-de-esta-skill>/scripts/check-prereqs.mjs" --project "<ruta-del-proyecto-angular>"
 ```

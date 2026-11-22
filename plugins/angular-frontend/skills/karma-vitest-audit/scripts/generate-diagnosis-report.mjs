@@ -57,12 +57,15 @@ const CUSTOM_KARMA_PATTERNS = [
 
 function parseArgs(argv) {
   let projectDir = process.cwd();
+  let angularProject = null;
   for (let i = 2; i < argv.length; i++) {
     if ((argv[i] === '--project' || argv[i] === '-p') && argv[i + 1]) {
       projectDir = path.resolve(argv[++i]);
+    } else if (argv[i] === '--angular-project' && argv[i + 1]) {
+      angularProject = argv[++i].trim();
     }
   }
-  return { projectDir };
+  return { projectDir, angularProject };
 }
 
 function parseSemver(raw) {
@@ -234,19 +237,47 @@ function inspectKarmaConfig(karmaConfPath) {
   };
 }
 
-function detectProjectsAndTargets(angularJson) {
+function detectProjectsAndTargets(angularJson, selectedProject = null) {
   if (!angularJson || typeof angularJson.projects !== 'object') {
-    return { angularProjectCount: 0, testTargets: [], primaryBuilder: null, projectName: null };
+    return {
+      angularProjectCount: 0,
+      testTargets: [],
+      primaryBuilder: null,
+      projectName: null,
+      selectedProjectRoot: null,
+      selectedKarmaConfig: null,
+      selectedProjectNotFound: false,
+      availableProjects: [],
+    };
   }
   const projectNames = Object.keys(angularJson.projects);
+
+  if (selectedProject && !Object.prototype.hasOwnProperty.call(angularJson.projects, selectedProject)) {
+    return {
+      angularProjectCount: projectNames.length,
+      testTargets: [],
+      primaryBuilder: null,
+      projectName: selectedProject,
+      selectedProjectRoot: null,
+      selectedKarmaConfig: null,
+      selectedProjectNotFound: true,
+      availableProjects: projectNames,
+    };
+  }
+
+  const entries = selectedProject
+    ? [[selectedProject, angularJson.projects[selectedProject]]]
+    : Object.entries(angularJson.projects);
+
   const testTargets = [];
-  for (const [projName, projConfig] of Object.entries(angularJson.projects)) {
+  for (const [projName, projConfig] of entries) {
     const targets = projConfig?.architect || projConfig?.targets;
     if (targets?.test?.builder) {
       testTargets.push({
         project: projName,
         builder: targets.test.builder,
         hasKarmaConfigOption: Boolean(targets.test.options?.karmaConfig),
+        karmaConfigPath: targets.test.options?.karmaConfig || null,
         hasCustomAssetsOrStyles: Boolean(
           (Array.isArray(targets.test.options?.styles) && targets.test.options.styles.length > 0) ||
           (Array.isArray(targets.test.options?.scripts) && targets.test.options.scripts.length > 0)
@@ -255,11 +286,19 @@ function detectProjectsAndTargets(angularJson) {
     }
   }
   const primary = testTargets[0] || null;
+  const selectedConfig = selectedProject ? angularJson.projects[selectedProject] : null;
+  const selectedProjectRoot = selectedConfig
+    ? selectedConfig.root || selectedConfig.sourceRoot || ''
+    : null;
   return {
-    angularProjectCount: projectNames.length,
+    angularProjectCount: selectedProject ? 1 : projectNames.length,
     testTargets,
     primaryBuilder: primary ? primary.builder : null,
-    projectName: primary ? primary.project : projectNames[0] || null,
+    projectName: selectedProject || (primary ? primary.project : projectNames[0] || null),
+    selectedProjectRoot,
+    selectedKarmaConfig: primary?.karmaConfigPath || null,
+    selectedProjectNotFound: false,
+    availableProjects: projectNames,
   };
 }
 
@@ -903,10 +942,10 @@ function renderHtml(report) {
 }
 
 function main() {
-  const { projectDir } = parseArgs(process.argv);
+  const { projectDir, angularProject } = parseArgs(process.argv);
   const pkgPath = path.join(projectDir, 'package.json');
   const angularJsonPath = path.join(projectDir, 'angular.json');
-  const karmaConfPath = path.join(projectDir, 'karma.conf.js');
+  const defaultKarmaConfPath = path.join(projectDir, 'karma.conf.js');
 
   const blockers = [];
   const warnings = [];
@@ -960,9 +999,40 @@ function main() {
     .filter((k) => k === 'karma' || k.startsWith('karma-') || k === 'jasmine-core' || k.startsWith('jasmine-') || k === '@types/jasmine')
     .sort();
 
-  const { angularProjectCount, testTargets, primaryBuilder: testBuilder, projectName } = detectProjectsAndTargets(angularJson);
-  const specFiles = collectSpecFiles(projectDir);
+  const {
+    angularProjectCount,
+    testTargets,
+    primaryBuilder: testBuilder,
+    projectName,
+    selectedProjectRoot,
+    selectedKarmaConfig,
+    selectedProjectNotFound,
+    availableProjects,
+  } = detectProjectsAndTargets(angularJson, angularProject);
+
+  if (selectedProjectNotFound) {
+    blockers.push({
+      code: 'ANGULAR_PROJECT_NOT_FOUND',
+      severity: 'error',
+      message: `El proyecto "${angularProject}" no existe en angular.json. Proyectos disponibles: ${availableProjects.join(', ') || 'ninguno'}.`,
+      remediation: 'Indica un nombre de proyecto válido definido bajo "projects" en angular.json.',
+    });
+  }
+
+  const specSearchRoot =
+    selectedProjectRoot !== null && selectedProjectRoot !== ''
+      ? path.resolve(projectDir, selectedProjectRoot)
+      : projectDir;
+  const specFiles = collectSpecFiles(projectDir, specSearchRoot);
   const specAnalysis = inspectAllSpecs(specFiles);
+
+  const karmaConfPath = selectedKarmaConfig
+    ? path.resolve(projectDir, selectedKarmaConfig)
+    : selectedProjectRoot
+      ? (fs.existsSync(path.resolve(projectDir, selectedProjectRoot, 'karma.conf.js'))
+          ? path.resolve(projectDir, selectedProjectRoot, 'karma.conf.js')
+          : defaultKarmaConfPath)
+      : defaultKarmaConfPath;
   const karmaConfInfo = inspectKarmaConfig(karmaConfPath);
 
   if (!angularCore) {
@@ -1043,7 +1113,7 @@ function main() {
   }
 
   const detected = {
-    projectName: pkg.name || projectName || path.basename(projectDir),
+    projectName: angularProject || pkg.name || projectName || path.basename(projectDir),
     angularCoreVersion: angularCore ? angularCore.version : null,
     angularCoreRaw,
     angularCliVersion: angularCli ? angularCli.version : null,
