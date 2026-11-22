@@ -477,34 +477,48 @@ function renderHtml(report) {
   };
 
   const blockerBanner = isBlocked
-    ? `<section class="alert alert-danger">
-        <div class="alert-title">Flujo bloqueado — Se requiere actualizar Angular primero</div>
-        <ul>${report.blockers
+    ? `<section class="card notice-card notice-blocked">
+        <div class="notice-head">
+          <div class="notice-title"><span class="dot dot-danger"></span>Flujo bloqueado — Se requiere actualizar Angular primero</div>
+          <span class="badge badge-secondary">UPGRADE_FIRST</span>
+        </div>
+        <ul class="blocker-list">${report.blockers
           .map(
             (b) =>
               `<li><strong>${escapeHtml(b.code)}:</strong> ${escapeHtml(b.message)}<br><span class="muted">Remediación: ${escapeHtml(b.remediation)}</span></li>`
           )
           .join('')}</ul>
        </section>`
-    : `<section class="alert ${report.officialSchematic.sufficient ? 'alert-success' : 'alert-info'}">
-        <div class="alert-title">${escapeHtml(strategyNames[report.recommendedStrategy] || report.recommendedStrategy)}</div>
-        <p>${escapeHtml(report.officialSchematic.notes)}</p>
-        <div class="cmd-box"><code>${escapeHtml(report.officialSchematic.command)}</code></div>
+    : `<section class="card notice-card">
+        <div class="notice-head">
+          <div>
+            <div class="notice-title">${escapeHtml(strategyNames[report.recommendedStrategy] || report.recommendedStrategy)}</div>
+            <p class="notice-desc">${escapeHtml(report.officialSchematic.notes)}</p>
+          </div>
+          <span class="badge badge-primary">${report.officialSchematic.sufficient ? 'Schematic oficial' : 'Híbrido'}</span>
+        </div>
+        <div class="cmd-row">
+          <div class="cmd-box"><code id="schematicCmd">${escapeHtml(report.officialSchematic.command)}</code></div>
+          <button class="btn-primary" id="copyCmdBtn" type="button">Copiar comando</button>
+        </div>
        </section>`;
 
   const depsHtml =
     report.findings.dependenciesToReview.length > 0
       ? `<div class="chips">${report.findings.dependenciesToReview.map((d) => `<span class="chip">${escapeHtml(d)}</span>`).join('')}</div>`
-      : '<span class="muted">Sin paquetes Karma/Jasmine detectados</span>';
+      : '<span class="muted small">Sin paquetes Karma/Jasmine detectados</span>';
 
   const specRows = report.specInventory
     .map((s) => {
       const cls = s.complexity;
       const label = cls === 'high' ? 'Alta' : cls === 'medium' ? 'Media' : 'Baja';
-      const patterns = s.jasminePatterns.length > 0 ? s.jasminePatterns.map((p) => `<span class="chip-sm">${escapeHtml(p)}</span>`).join(' ') : '<span class="muted">Estándar</span>';
+      const patterns =
+        s.jasminePatterns.length > 0
+          ? s.jasminePatterns.map((p) => `<span class="chip-sm">${escapeHtml(p)}</span>`).join(' ')
+          : '<span class="muted">Estándar</span>';
       return `<tr data-complexity="${cls}" data-file="${escapeHtml(s.file.toLowerCase())}">
         <td class="mono">${escapeHtml(s.file)}</td>
-        <td><span class="pill pill-${cls}">${label}</span></td>
+        <td><span class="badge badge-${cls}"><span class="dot dot-${cls}"></span>${label}</span></td>
         <td class="num">${s.jasmineApiCount}</td>
         <td class="num">${s.fakeAsyncTickCount}</td>
         <td>${patterns}</td>
@@ -518,7 +532,10 @@ function renderHtml(report) {
       return `<div class="step step-${stateClass}">
         <div class="step-num">${escapeHtml(r.step)}</div>
         <div class="step-body">
-          <div class="step-title">${escapeHtml(r.phase)} <span class="state-tag state-${stateClass}">${escapeHtml(r.state)}</span></div>
+          <div class="step-title">
+            <span>${escapeHtml(r.phase)}</span>
+            <span class="state-tag state-${stateClass}">${escapeHtml(r.state)}</span>
+          </div>
           <div class="step-desc">${escapeHtml(r.description)}</div>
         </div>
       </div>`;
@@ -533,246 +550,439 @@ function renderHtml(report) {
   <title>Migration Assessment Report — ${escapeHtml(projectTitle)}</title>
   <style>
     :root {
-      --bg: #0b0e14;
-      --surface: #131822;
-      --surface-2: #1a2130;
-      --border: #263042;
-      --text: #eef2f8;
-      --muted: #93a1b7;
-      --green: #16c47f;
-      --green-bg: rgba(22, 196, 127, 0.14);
-      --amber: #f59e0b;
-      --amber-bg: rgba(245, 158, 11, 0.15);
-      --red: #ef4444;
-      --red-bg: rgba(239, 68, 68, 0.15);
-      --blue: #3b82f6;
-      --blue-bg: rgba(59, 130, 246, 0.15);
-      --track: #232c3d;
+      --bg: #09090b;
+      --card: #121214;
+      --secondary: #1c1c1f;
+      --secondary-hover: #27272a;
+      --border: rgba(255, 255, 255, 0.08);
+      --border-strong: rgba(255, 255, 255, 0.14);
+      --foreground: #fafafa;
+      --muted: #8e8e93;
+      --primary: #3b82f6;
+      --primary-hover: #2563eb;
+      --primary-soft: rgba(59, 130, 246, 0.14);
+      --primary-border: rgba(59, 130, 246, 0.32);
+      --bar-medium: #a1a1aa;
+      --bar-high: #52525b;
+      --track: #222226;
+      --danger-dot: #ef4444;
+      --danger-border: rgba(239, 68, 68, 0.28);
+      --row-hover: rgba(255, 255, 255, 0.025);
+      --radius-card: 16px;
+      --radius-inner: 10px;
+      --radius-control: 8px;
     }
     body.light {
-      --bg: #f5f7fb;
-      --surface: #ffffff;
-      --surface-2: #f0f4fa;
-      --border: #dce3ef;
-      --text: #0f172a;
-      --muted: #475569;
-      --track: #e2e8f0;
+      --bg: #f4f4f5;
+      --card: #ffffff;
+      --secondary: #f4f4f5;
+      --secondary-hover: #e4e4e7;
+      --border: #e4e4e7;
+      --border-strong: #d4d4d8;
+      --foreground: #09090b;
+      --muted: #71717a;
+      --primary: #2563eb;
+      --primary-hover: #1d4ed8;
+      --primary-soft: rgba(37, 99, 235, 0.09);
+      --primary-border: rgba(37, 99, 235, 0.26);
+      --bar-medium: #52525b;
+      --bar-high: #a1a1aa;
+      --track: #e4e4e7;
+      --danger-dot: #dc2626;
+      --danger-border: rgba(220, 38, 38, 0.26);
+      --row-hover: rgba(9, 9, 11, 0.02);
     }
     * { box-sizing: border-box; }
     body {
       margin: 0;
-      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Inter, sans-serif;
+      font-family: Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      -webkit-font-smoothing: antialiased;
       background: var(--bg);
-      color: var(--text);
+      color: var(--foreground);
       line-height: 1.5;
-      padding: 28px 18px 64px;
+      padding: 32px 20px 72px;
     }
-    .container { max-width: 960px; margin: 0 auto; }
+    .container { max-width: 1024px; margin: 0 auto; }
+
+    /* Header */
     .topbar {
       display: flex;
       justify-content: space-between;
       align-items: center;
       flex-wrap: wrap;
       gap: 12px;
-      margin-bottom: 10px;
+      margin-bottom: 12px;
     }
     .eyebrow {
-      font-size: 13px;
+      font-size: 11px;
       font-weight: 600;
-      letter-spacing: 0.04em;
+      letter-spacing: 0.08em;
       text-transform: uppercase;
       color: var(--muted);
     }
     .badges { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
-    .pill {
+    .badge {
       display: inline-flex;
       align-items: center;
-      padding: 3px 10px;
+      gap: 6px;
+      padding: 4px 10px;
       border-radius: 999px;
       font-size: 12px;
-      font-weight: 700;
-      letter-spacing: 0.02em;
-    }
-    .pill-ready, .pill-low { background: var(--green-bg); color: var(--green); }
-    .pill-blocked, .pill-high { background: var(--red-bg); color: var(--red); }
-    .pill-medium { background: var(--amber-bg); color: var(--amber); }
-    .pill-strategy { background: var(--blue-bg); color: var(--blue); }
-    .theme-btn {
-      background: var(--surface);
-      color: var(--text);
+      font-weight: 500;
       border: 1px solid var(--border);
-      border-radius: 8px;
-      padding: 4px 10px;
+      background: var(--card);
+      color: var(--foreground);
+      white-space: nowrap;
+    }
+    .badge-primary {
+      background: var(--primary-soft);
+      border-color: var(--primary-border);
+      color: var(--primary);
+    }
+    .badge-secondary {
+      background: var(--secondary);
+      border-color: var(--border);
+      color: var(--muted);
+    }
+    .badge-low {
+      background: var(--primary-soft);
+      border-color: var(--primary-border);
+      color: var(--primary);
+    }
+    .badge-medium {
+      background: var(--secondary);
+      border-color: var(--border-strong);
+      color: var(--foreground);
+    }
+    .badge-high {
+      background: var(--secondary);
+      border-color: var(--border-strong);
+      color: var(--foreground);
+    }
+    .dot {
+      width: 6px;
+      height: 6px;
+      border-radius: 999px;
+      flex-shrink: 0;
+      background: var(--muted);
+    }
+    .dot-ready, .dot-low { background: var(--primary); }
+    .dot-medium { background: var(--bar-medium); }
+    .dot-high { background: var(--foreground); }
+    .dot-danger { background: var(--danger-dot); }
+
+    .btn-secondary {
+      background: var(--secondary);
+      color: var(--foreground);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-control);
+      padding: 6px 12px;
       font-size: 12px;
+      font-weight: 500;
       cursor: pointer;
+      transition: background 0.15s ease, border-color 0.15s ease;
     }
-    h1 { margin: 4px 0 6px; font-size: 28px; font-weight: 700; }
-    .subtitle { color: var(--muted); font-size: 14px; margin-bottom: 22px; }
-    h2 {
-      font-size: 16px;
+    .btn-secondary:hover { background: var(--secondary-hover); border-color: var(--border-strong); }
+    .btn-primary {
+      background: var(--primary);
+      color: #ffffff;
+      border: 1px solid transparent;
+      border-radius: var(--radius-control);
+      padding: 8px 14px;
+      font-size: 12px;
       font-weight: 600;
-      margin: 28px 0 14px;
-      padding-bottom: 8px;
-      border-bottom: 1px solid var(--border);
+      cursor: pointer;
+      white-space: nowrap;
+      transition: background 0.15s ease;
     }
-    .alert {
-      border-radius: 12px;
-      padding: 16px 18px;
-      margin: 18px 0 22px;
-      border: 1px solid var(--border);
+    .btn-primary:hover { background: var(--primary-hover); }
+
+    h1 {
+      margin: 4px 0 6px;
+      font-size: 28px;
+      font-weight: 600;
+      letter-spacing: -0.025em;
     }
-    .alert-danger { background: var(--red-bg); border-color: rgba(239, 68, 68, 0.35); }
-    .alert-success { background: var(--green-bg); border-color: rgba(22, 196, 127, 0.35); }
-    .alert-info { background: var(--blue-bg); border-color: rgba(59, 130, 246, 0.35); }
-    .alert-title { font-weight: 700; font-size: 15px; margin-bottom: 6px; }
-    .alert ul { margin: 8px 0 0 18px; padding: 0; }
-    .alert p { margin: 4px 0 10px; font-size: 14px; }
-    .cmd-box {
-      background: var(--surface);
-      border: 1px solid var(--border);
-      border-radius: 8px;
-      padding: 8px 12px;
-      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    .subtitle {
+      color: var(--muted);
       font-size: 13px;
+      margin-bottom: 24px;
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 6px;
+    }
+    .subtitle code {
+      background: var(--secondary);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 1px 6px;
+      font-size: 12px;
+      color: var(--foreground);
+    }
+    .section-title {
+      font-size: 12px;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+      color: var(--muted);
+      margin: 28px 0 12px;
+    }
+
+    /* Cards (16px radius) */
+    .card {
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-card);
+      padding: 20px;
+    }
+    .notice-card { margin: 18px 0 24px; }
+    .notice-blocked { border-color: var(--danger-border); }
+    .notice-head {
+      display: flex;
+      justify-content: space-between;
+      align-items: flex-start;
+      gap: 12px;
+      flex-wrap: wrap;
+      margin-bottom: 14px;
+    }
+    .notice-title {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      font-size: 15px;
+      font-weight: 600;
+      letter-spacing: -0.01em;
+    }
+    .notice-desc { margin: 4px 0 0; font-size: 13px; color: var(--muted); max-width: 720px; }
+    .blocker-list { margin: 8px 0 0 18px; padding: 0; font-size: 13px; display: flex; flex-direction: column; gap: 8px; }
+    .cmd-row { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+    .cmd-box {
+      flex: 1;
+      min-width: 240px;
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-inner);
+      padding: 9px 12px;
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      font-size: 12.5px;
+      color: var(--foreground);
       overflow-x: auto;
     }
+
+    /* KPIs & Findings */
     .kpi-grid {
       display: grid;
-      grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+      grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
       gap: 14px;
     }
-    .card {
-      background: var(--surface);
-      border: 1px solid var(--border);
-      border-radius: 12px;
-      padding: 16px 18px;
+    .kpi-eyebrow {
+      font-size: 11px;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      color: var(--muted);
     }
-    .kpi-val { font-size: 30px; font-weight: 700; line-height: 1.15; }
-    .kpi-label { font-size: 13px; color: var(--muted); margin-top: 6px; }
+    .kpi-val {
+      font-size: 30px;
+      font-weight: 600;
+      letter-spacing: -0.03em;
+      font-variant-numeric: tabular-nums;
+      line-height: 1.15;
+      margin-top: 8px;
+    }
+    .kpi-sub { font-size: 12px; color: var(--muted); margin-top: 4px; }
+
     .findings-list {
       display: grid;
       grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
-      gap: 12px;
+      gap: 14px;
     }
-    .finding-item {
-      background: var(--surface);
-      border: 1px solid var(--border);
-      border-radius: 10px;
-      padding: 14px 16px;
+    .finding-num {
+      font-size: 24px;
+      font-weight: 600;
+      letter-spacing: -0.02em;
+      font-variant-numeric: tabular-nums;
+      margin-top: 8px;
     }
-    .finding-title { font-size: 13px; color: var(--muted); }
-    .finding-num { font-size: 22px; font-weight: 700; margin-top: 4px; }
-    .chips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+    .chips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 12px; }
     .chip {
-      background: var(--surface-2);
+      background: var(--secondary);
       border: 1px solid var(--border);
       border-radius: 6px;
       padding: 2px 8px;
       font-size: 11px;
+      color: var(--muted);
       font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
     }
     .chip-sm {
       display: inline-block;
-      background: var(--surface-2);
+      background: var(--secondary);
       border: 1px solid var(--border);
-      border-radius: 5px;
-      padding: 1px 6px;
+      border-radius: 6px;
+      padding: 2px 7px;
       font-size: 11px;
+      color: var(--muted);
       font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-      margin: 1px 2px;
+      margin: 2px 2px 2px 0;
     }
-    .bar-group { margin-bottom: 16px; }
+
+    /* Progress Bars ("Savings Targets" style) */
+    .bar-group { margin-bottom: 18px; }
+    .bar-group:last-child { margin-bottom: 0; }
     .bar-head {
       display: flex;
       justify-content: space-between;
-      align-items: center;
-      margin-bottom: 6px;
+      align-items: baseline;
+      margin-bottom: 8px;
       font-size: 13px;
     }
+    .bar-label { display: inline-flex; align-items: center; gap: 8px; font-weight: 500; }
+    .bar-pct { font-weight: 600; font-variant-numeric: tabular-nums; }
     .bar-track {
-      height: 10px;
+      height: 6px;
       border-radius: 999px;
       background: var(--track);
       overflow: hidden;
     }
-    .bar-fill { height: 100%; border-radius: 999px; }
-    .fill-low { background: var(--green); }
-    .fill-medium { background: var(--amber); }
-    .fill-high { background: var(--red); }
-    .controls {
+    .bar-fill { height: 100%; border-radius: 999px; transition: width 0.25s ease; }
+    .fill-low { background: var(--primary); }
+    .fill-medium { background: var(--bar-medium); }
+    .fill-high { background: var(--bar-high); }
+
+    /* Table Card + Segmented Tabs */
+    .table-card { padding: 0; overflow: hidden; }
+    .table-toolbar {
       display: flex;
       justify-content: space-between;
       align-items: center;
       flex-wrap: wrap;
-      gap: 10px;
-      margin-bottom: 12px;
+      gap: 12px;
+      padding: 16px 20px;
+      border-bottom: 1px solid var(--border);
     }
-    .filter-btns { display: flex; gap: 6px; flex-wrap: wrap; }
-    .fbtn {
-      background: var(--surface);
-      color: var(--text);
+    .tabs-list {
+      display: inline-flex;
+      gap: 4px;
+      padding: 4px;
+      background: var(--secondary);
       border: 1px solid var(--border);
-      border-radius: 8px;
+      border-radius: var(--radius-inner);
+      flex-wrap: wrap;
+    }
+    .fbtn {
+      background: transparent;
+      color: var(--muted);
+      border: 1px solid transparent;
+      border-radius: var(--radius-control);
       padding: 5px 11px;
       font-size: 12px;
+      font-weight: 500;
       cursor: pointer;
+      transition: background 0.15s ease, color 0.15s ease;
     }
-    .fbtn.active { background: var(--blue-bg); border-color: var(--blue); color: var(--blue); font-weight: 600; }
+    .fbtn:hover { color: var(--foreground); }
+    .fbtn.active {
+      background: var(--primary);
+      color: #ffffff;
+      font-weight: 600;
+    }
     .search-input {
-      background: var(--surface);
-      color: var(--text);
+      background: var(--bg);
+      color: var(--foreground);
       border: 1px solid var(--border);
-      border-radius: 8px;
-      padding: 6px 10px;
+      border-radius: var(--radius-control);
+      padding: 7px 12px;
       font-size: 13px;
-      min-width: 220px;
+      min-width: 240px;
+      outline: none;
+      transition: border-color 0.15s ease, box-shadow 0.15s ease;
     }
-    .table-wrap {
-      background: var(--surface);
-      border: 1px solid var(--border);
-      border-radius: 12px;
-      overflow-x: auto;
+    .search-input::placeholder { color: var(--muted); }
+    .search-input:focus {
+      border-color: var(--primary);
+      box-shadow: 0 0 0 3px var(--primary-soft);
     }
+    .table-scroll { overflow-x: auto; }
     table { width: 100%; border-collapse: collapse; font-size: 13px; }
-    th, td { padding: 10px 12px; text-align: left; border-bottom: 1px solid var(--border); }
-    th { color: var(--muted); font-weight: 600; background: var(--surface-2); }
+    th, td { padding: 12px 16px; text-align: left; border-bottom: 1px solid var(--border); vertical-align: middle; }
+    th {
+      color: var(--muted);
+      font-size: 11px;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      background: var(--secondary);
+    }
+    tbody tr { transition: background 0.12s ease; }
+    tbody tr:hover { background: var(--row-hover); }
     tr:last-child td { border-bottom: none; }
-    .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; }
-    .num { text-align: center; font-variant-numeric: tabular-nums; }
-    .roadmap { display: flex; flex-direction: column; gap: 14px; }
+    .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; color: var(--foreground); }
+    .num { text-align: right; font-variant-numeric: tabular-nums; font-weight: 500; }
+
+    /* Roadmap */
+    .roadmap { display: flex; flex-direction: column; gap: 16px; }
     .step { display: flex; gap: 14px; align-items: flex-start; }
     .step-num {
       width: 28px;
       height: 28px;
-      border-radius: 50%;
-      background: var(--surface-2);
-      border: 1px solid var(--border);
+      border-radius: 999px;
+      background: var(--secondary);
+      border: 1px solid var(--border-strong);
+      color: var(--muted);
       display: flex;
       align-items: center;
       justify-content: center;
       font-size: 12px;
-      font-weight: 700;
+      font-weight: 600;
       flex-shrink: 0;
     }
-    .step-blocking .step-num { background: var(--red-bg); color: var(--red); border-color: var(--red); }
-    .step-completed .step-num { background: var(--green-bg); color: var(--green); border-color: var(--green); }
-    .step-title { font-weight: 600; font-size: 14px; }
-    .step-desc { font-size: 13px; color: var(--muted); margin-top: 2px; }
+    .step-completed .step-num {
+      background: var(--primary);
+      border-color: var(--primary);
+      color: #ffffff;
+    }
+    .step-blocking .step-num {
+      background: var(--secondary);
+      border-color: var(--danger-border);
+      color: var(--danger-dot);
+    }
+    .step-body { flex: 1; }
+    .step-title {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      flex-wrap: wrap;
+      font-weight: 600;
+      font-size: 14px;
+    }
+    .step-desc { font-size: 13px; color: var(--muted); margin-top: 3px; }
     .state-tag {
       font-size: 10px;
-      padding: 2px 6px;
-      border-radius: 4px;
-      margin-left: 6px;
+      font-weight: 600;
+      padding: 2px 7px;
+      border-radius: 999px;
       text-transform: uppercase;
-      background: var(--surface-2);
+      letter-spacing: 0.04em;
+      background: var(--secondary);
+      border: 1px solid var(--border);
       color: var(--muted);
     }
-    .state-blocking { background: var(--red-bg); color: var(--red); }
-    .state-completed { background: var(--green-bg); color: var(--green); }
+    .state-completed {
+      background: var(--primary-soft);
+      border-color: var(--primary-border);
+      color: var(--primary);
+    }
+    .state-blocking {
+      border-color: var(--danger-border);
+      color: var(--danger-dot);
+    }
+
     .muted { color: var(--muted); }
+    .small { font-size: 12px; }
     footer {
-      margin-top: 32px;
-      padding-top: 14px;
+      margin-top: 36px;
+      padding-top: 16px;
       border-top: 1px solid var(--border);
       font-size: 12px;
       color: var(--muted);
@@ -788,123 +998,135 @@ function renderHtml(report) {
     <div class="topbar">
       <div class="eyebrow">Angular Migration Assessment · GACC Plugin</div>
       <div class="badges">
-        <span class="pill ${isBlocked ? 'pill-blocked' : 'pill-ready'}">${escapeHtml(report.status)}</span>
-        <span class="pill pill-strategy">${escapeHtml(strategyNames[report.recommendedStrategy] || report.recommendedStrategy)}</span>
-        <button class="theme-btn" id="themeToggle" type="button">Tema claro / oscuro</button>
+        <span class="badge"><span class="dot ${isBlocked ? 'dot-danger' : 'dot-ready'}"></span>${escapeHtml(report.status)}</span>
+        <span class="badge badge-primary">${escapeHtml(strategyNames[report.recommendedStrategy] || report.recommendedStrategy)}</span>
+        <button class="btn-secondary" id="themeToggle" type="button">Tema claro / oscuro</button>
       </div>
     </div>
 
     <h1>Migration Assessment Report</h1>
     <div class="subtitle">
-      Proyecto: <strong>${escapeHtml(projectTitle)}</strong> · Auditoría de Karma/Jasmine a Vitest ·
-      Angular <code>${escapeHtml(report.detected.angularCoreVersion || 'N/D')}</code> ·
-      Node.js <code>${escapeHtml(report.detected.nodeVersion)}</code> ·
-      Builder <code>${escapeHtml(report.detected.testBuilder || 'N/D')}</code>
+      <span>Proyecto: <strong style="color:var(--foreground)">${escapeHtml(projectTitle)}</strong></span>
+      <span>·</span>
+      <span>Angular <code>${escapeHtml(report.detected.angularCoreVersion || 'N/D')}</code></span>
+      <span>·</span>
+      <span>Node.js <code>${escapeHtml(report.detected.nodeVersion)}</code></span>
+      <span>·</span>
+      <span>Builder <code>${escapeHtml(report.detected.testBuilder || 'N/D')}</code></span>
     </div>
 
     ${blockerBanner}
 
-    <h2>Resumen ejecutivo</h2>
+    <div class="section-title">Resumen ejecutivo</div>
     <div class="kpi-grid">
       <div class="card">
+        <div class="kpi-eyebrow">Archivos de pruebas</div>
         <div class="kpi-val">${report.metrics.specFileCount}</div>
-        <div class="kpi-label">Archivos de pruebas (*.spec.ts)</div>
+        <div class="kpi-sub">Specs *.spec.ts detectados</div>
       </div>
       <div class="card">
+        <div class="kpi-eyebrow">Proyectos Angular</div>
         <div class="kpi-val">${report.metrics.angularProjectCount}</div>
-        <div class="kpi-label">Proyectos Angular</div>
+        <div class="kpi-sub">Definidos en angular.json</div>
       </div>
       <div class="card">
+        <div class="kpi-eyebrow">Baja complejidad</div>
         <div class="kpi-val">${report.metrics.lowComplexityPct}%</div>
-        <div class="kpi-label">Patrones de baja complejidad</div>
+        <div class="kpi-sub">Migración directa con schematic</div>
       </div>
       <div class="card">
+        <div class="kpi-eyebrow">Requieren revisión</div>
         <div class="kpi-val">${report.metrics.needsReviewPct}%</div>
-        <div class="kpi-label">Patrones que requieren revisión</div>
+        <div class="kpi-sub">Patrones medios o avanzados</div>
       </div>
     </div>
 
-    <h2>Hallazgos</h2>
+    <div class="section-title">Hallazgos</div>
     <div class="findings-list">
-      <div class="finding-item">
-        <div class="finding-title">Uso de Jasmine APIs</div>
+      <div class="card">
+        <div class="kpi-eyebrow">Uso de Jasmine APIs</div>
         <div class="finding-num">${report.findings.jasmineApiUsages}</div>
+        <div class="kpi-sub">Spies, matchers y helpers</div>
       </div>
-      <div class="finding-item">
-        <div class="finding-title">Uso de fakeAsync / tick / clock</div>
+      <div class="card">
+        <div class="kpi-eyebrow">fakeAsync / timers</div>
         <div class="finding-num">${report.findings.fakeAsyncTickUsages}</div>
+        <div class="kpi-sub">fakeAsync, tick, flush y clock</div>
       </div>
-      <div class="finding-item">
-        <div class="finding-title">Configuraciones Karma personalizadas</div>
+      <div class="card">
+        <div class="kpi-eyebrow">Karma personalizado</div>
         <div class="finding-num">${report.findings.customKarmaConfigs}</div>
+        <div class="kpi-sub">Configuraciones no estándar</div>
       </div>
-      <div class="finding-item">
-        <div class="finding-title">Dependencias por revisar</div>
+      <div class="card">
+        <div class="kpi-eyebrow">Dependencias por revisar</div>
         <div class="finding-num">${report.findings.dependenciesToReview.length}</div>
         ${depsHtml}
       </div>
     </div>
 
-    <h2>Clasificación de migración</h2>
+    <div class="section-title">Clasificación de migración</div>
     <div class="card">
       <div class="bar-group">
         <div class="bar-head">
-          <span><span class="pill pill-low">Baja</span> <span class="muted">(${report.complexityBreakdown.low.count} archivo(s))</span></span>
-          <strong>${report.complexityBreakdown.low.percentage}%</strong>
+          <span class="bar-label"><span class="dot dot-low"></span>Baja <span class="muted">(${report.complexityBreakdown.low.count} archivo(s))</span></span>
+          <span class="bar-pct">${report.complexityBreakdown.low.percentage}%</span>
         </div>
         <div class="bar-track"><div class="bar-fill fill-low" style="width:${report.complexityBreakdown.low.percentage}%"></div></div>
       </div>
       <div class="bar-group">
         <div class="bar-head">
-          <span><span class="pill pill-medium">Media</span> <span class="muted">(${report.complexityBreakdown.medium.count} archivo(s))</span></span>
-          <strong>${report.complexityBreakdown.medium.percentage}%</strong>
+          <span class="bar-label"><span class="dot dot-medium"></span>Media <span class="muted">(${report.complexityBreakdown.medium.count} archivo(s))</span></span>
+          <span class="bar-pct">${report.complexityBreakdown.medium.percentage}%</span>
         </div>
         <div class="bar-track"><div class="bar-fill fill-medium" style="width:${report.complexityBreakdown.medium.percentage}%"></div></div>
       </div>
-      <div class="bar-group" style="margin-bottom:0">
+      <div class="bar-group">
         <div class="bar-head">
-          <span><span class="pill pill-high">Alta</span> <span class="muted">(${report.complexityBreakdown.high.count} archivo(s))</span></span>
-          <strong>${report.complexityBreakdown.high.percentage}%</strong>
+          <span class="bar-label"><span class="dot dot-high"></span>Alta <span class="muted">(${report.complexityBreakdown.high.count} archivo(s))</span></span>
+          <span class="bar-pct">${report.complexityBreakdown.high.percentage}%</span>
         </div>
         <div class="bar-track"><div class="bar-fill fill-high" style="width:${report.complexityBreakdown.high.percentage}%"></div></div>
       </div>
     </div>
 
-    <h2>Inventario de archivos *.spec.ts (${report.specInventory.length})</h2>
-    <div class="controls">
-      <div class="filter-btns">
-        <button class="fbtn active" data-filter="all" type="button">Todos (${report.specInventory.length})</button>
-        <button class="fbtn" data-filter="high" type="button">Alta (${report.complexityBreakdown.high.count})</button>
-        <button class="fbtn" data-filter="medium" type="button">Media (${report.complexityBreakdown.medium.count})</button>
-        <button class="fbtn" data-filter="low" type="button">Baja (${report.complexityBreakdown.low.count})</button>
+    <div class="section-title">Inventario de archivos *.spec.ts (${report.specInventory.length})</div>
+    <div class="card table-card">
+      <div class="table-toolbar">
+        <div class="tabs-list" role="tablist">
+          <button class="fbtn active" data-filter="all" type="button">Todos (${report.specInventory.length})</button>
+          <button class="fbtn" data-filter="high" type="button">Alta (${report.complexityBreakdown.high.count})</button>
+          <button class="fbtn" data-filter="medium" type="button">Media (${report.complexityBreakdown.medium.count})</button>
+          <button class="fbtn" data-filter="low" type="button">Baja (${report.complexityBreakdown.low.count})</button>
+        </div>
+        <input class="search-input" id="specSearch" type="search" placeholder="Filtrar archivo..." />
       </div>
-      <input class="search-input" id="specSearch" type="search" placeholder="Filtrar archivo..." />
-    </div>
-    <div class="table-wrap">
-      <table>
-        <thead>
-          <tr>
-            <th>Archivo</th>
-            <th>Complejidad</th>
-            <th class="num">Jasmine APIs</th>
-            <th class="num">fakeAsync / timers</th>
-            <th>Patrones detectados</th>
-          </tr>
-        </thead>
-        <tbody id="specTableBody">
-          ${specRows || '<tr><td colspan="5" class="muted">No se encontraron archivos *.spec.ts en el workspace.</td></tr>'}
-        </tbody>
-      </table>
+      <div class="table-scroll">
+        <table>
+          <thead>
+            <tr>
+              <th>Archivo</th>
+              <th>Complejidad</th>
+              <th class="num">Jasmine APIs</th>
+              <th class="num">fakeAsync / timers</th>
+              <th>Patrones detectados</th>
+            </tr>
+          </thead>
+          <tbody id="specTableBody">
+            ${specRows || '<tr><td colspan="5" class="muted">No se encontraron archivos *.spec.ts en el workspace.</td></tr>'}
+          </tbody>
+        </table>
+      </div>
     </div>
 
-    <h2>Plan de migración propuesto (Hoja de ruta orientativa)</h2>
+    <div class="section-title">Plan de migración propuesto</div>
     <div class="card roadmap">
       ${roadmapHtml}
     </div>
 
     <footer>
       <span>Generado determinísticamente desde el análisis real del repositorio · Schema v${SCHEMA_VERSION}</span>
-      <span>Evaluado: ${escapeHtml(report.evaluatedAt)} · Aprobación: <strong>${escapeHtml(report.approval.status)}</strong></span>
+      <span>Evaluado: ${escapeHtml(report.evaluatedAt)} · Aprobación: <strong style="color:var(--foreground)">${escapeHtml(report.approval.status)}</strong></span>
     </footer>
   </div>
 
@@ -913,6 +1135,18 @@ function renderHtml(report) {
       const toggle = document.getElementById('themeToggle');
       if (toggle) {
         toggle.addEventListener('click', () => document.body.classList.toggle('light'));
+      }
+      const copyBtn = document.getElementById('copyCmdBtn');
+      const cmdEl = document.getElementById('schematicCmd');
+      if (copyBtn && cmdEl && navigator.clipboard) {
+        copyBtn.addEventListener('click', async () => {
+          try {
+            await navigator.clipboard.writeText(cmdEl.textContent || '');
+            const prev = copyBtn.textContent;
+            copyBtn.textContent = 'Copiado';
+            setTimeout(() => { copyBtn.textContent = prev; }, 1600);
+          } catch {}
+        });
       }
       let activeFilter = 'all';
       const search = document.getElementById('specSearch');
