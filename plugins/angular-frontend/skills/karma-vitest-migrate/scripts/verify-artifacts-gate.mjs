@@ -7,20 +7,47 @@
  *    node verify-artifacts-gate.mjs --project <dir> --phase <plan|migrate>
  *    Exits with 0 if the required artifacts exist and are APPROVED, or 1 otherwise.
  *
- * 2. Copilot preToolUse Hook mode (agent-scoped on karma-vitest-migrator):
+ * 2. Copilot harness preToolUse Hook mode (agent-scoped on karma-vitest-migrator):
  *    node verify-artifacts-gate.mjs --hook [--project <dir>]
- *    Reads the Copilot preToolUse event JSON from stdin:
+ *    Reads the Copilot harness preToolUse camelCase event JSON from stdin:
  *      { sessionId, timestamp, cwd, toolName, toolArgs }
- *    or VS Code PreToolUse snake_case format:
- *      { hook_event_name, session_id, timestamp, cwd, tool_name, tool_input }
- *    Outputs either:
- *    - {} (allow / no decision)
- *    - {"permissionDecision":"deny","permissionDecisionReason":"..."}
+ *    Outputs flat Copilot harness JSON to stdout:
+ *      - {} (NO_DECISION: lets the harness continue its normal permission flow)
+ *      - {"permissionDecision":"deny","permissionDecisionReason":"..."} (DENY)
+ *
+ * Security model (Workflow Level 1 — NOT a replacement for OS sandboxing or org policies):
+ * Three explicit decision states:
+ *   - DENY (unconditional, never bypassed by workflow approval):
+ *       * Invalid/empty stdin, missing toolName, or malformed toolArgs.
+ *       * Unknown runtime toolName (strictly separated from agent frontmatter aliases).
+ *       * Subagent delegation via "task" (Migrator is not authorized to spawn subagents).
+ *       * Unverifiable/malformed file targets, non-file URIs, UNC paths, symlink escapes,
+ *         or mutations targeting paths outside the workspace root.
+ *   - NO_DECISION ({}):
+ *       * Officially documented read-only/non-mutating runtime tools (view, glob, grep,
+ *         ask_user, web_fetch, update_todo).
+ *       * Exact invocations of the 3 trusted plugin scripts (verified via canonical
+ *         realpath, closed grammar, strict per-script contract, and --project constrained
+ *         within the current workspace).
+ *       * File mutations where EVERY target resolves strictly inside
+ *         <project>/.migration-artifacts/karma-to-vitest.
+ *   - REQUIRE_GATE:
+ *       * Known shell/file-mutation tools operating inside the workspace: returns
+ *         NO_DECISION only when diagnosis (READY+APPROVED) and plan (APPROVED+tasks)
+ *         pass validateGate(); otherwise DENY.
+ *
+ * Known runtime limitations (documented intentionally):
+ *   - Command hook timeouts in Copilot are fail-open (errors/non-zero exit are fail-closed).
+ *   - Symlink resolution at preToolUse time cannot eliminate TOCTOU race conditions; OS
+ *     permissions and sandboxing (Level 2) remain mandatory for hard isolation.
+ *   - Allowing bare "node"/"node.exe" relies on the environment PATH; process.execPath
+ *     is prioritized and validated via realpathSync.
  *
  * Zero external dependencies — uses only built-in Node.js modules.
  */
 import fs from 'node:fs';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 const ARTIFACTS_SUBDIR = path.join('.migration-artifacts', 'karma-to-vitest');
 const DIAGNOSIS_JSON = '01-diagnosis-report.json';
@@ -28,38 +55,68 @@ const DIAGNOSIS_MD = '01-diagnosis-report.md';
 const PLAN_JSON = '02-migration-plan.json';
 const PLAN_MD = '02-migration-plan.md';
 
-// Official Copilot / VS Code mutating or shell execution tools that must pass the migration gate
-const MUTATING_TOOL_PATTERNS = [
-  'edit',
-  'create',
-  'write',
-  'delete',
-  'remove',
-  'replace',
-  'patch',
-  'bash',
-  'powershell',
-  'terminal',
-  'shell',
-  'exec',
-  'run_command',
+const THIS_FILE = fileURLToPath(import.meta.url);
+const PLUGIN_ROOT_DIR = path.resolve(path.dirname(THIS_FILE), '..', '..', '..');
+
+const TRUSTED_SCRIPT_SPECS = [
+  {
+    name: 'check-prereqs.mjs',
+    relPath: path.join('skills', 'angular-migration-prereqs', 'scripts', 'check-prereqs.mjs'),
+  },
+  {
+    name: 'generate-diagnosis-report.mjs',
+    relPath: path.join('skills', 'karma-vitest-audit', 'scripts', 'generate-diagnosis-report.mjs'),
+  },
+  {
+    name: 'verify-artifacts-gate.mjs',
+    relPath: path.join('skills', 'karma-vitest-migrate', 'scripts', 'verify-artifacts-gate.mjs'),
+  },
 ];
 
-// Official Copilot read-only, search, UI, and orchestration tools (always allowed)
-const ALWAYS_ALLOWED_TOOLS = new Set([
+function realpathNative(p) {
+  return typeof fs.realpathSync.native === 'function'
+    ? fs.realpathSync.native(p)
+    : fs.realpathSync(p);
+}
+
+function buildTrustedScriptMap() {
+  const map = new Map();
+  for (const spec of TRUSTED_SCRIPT_SPECS) {
+    const absPath = path.resolve(PLUGIN_ROOT_DIR, spec.relPath);
+    try {
+      map.set(realpathNative(absPath), spec.name);
+    } catch {
+      map.set(absPath, spec.name);
+    }
+  }
+  return map;
+}
+
+const TRUSTED_SCRIPT_REALPATHS = buildTrustedScriptMap();
+
+// Official GitHub Copilot preToolUse runtime tool identifiers ONLY
+// (strictly separated from agent frontmatter `tools:` aliases such as read/search/todo/agent)
+const READ_ONLY_RUNTIME_TOOLS = new Set([
   'view',
   'glob',
   'grep',
-  'task',
   'ask_user',
   'web_fetch',
-  'read',
-  'search',
-  'todo',
-  'agent',
-  'report_intent',
-  'vscode/askquestions',
+  'update_todo',
 ]);
+
+// Subagent delegation tool in Copilot runtime: unconditionally denied inside Migrator
+const BLOCKED_DELEGATION_TOOLS = new Set(['task']);
+
+// Official shell execution tools in Copilot preToolUse runtime
+const SHELL_RUNTIME_TOOLS = new Set(['bash', 'powershell']);
+
+// Closed grammar: disallow Bash, PowerShell, and Windows CMD metacharacters / expansions
+// On POSIX, backslashes are also disallowed to eliminate shell escape ambiguity.
+const FORBIDDEN_SHELL_CHARS_REGEX =
+  process.platform === 'win32'
+    ? /[$`%!&|;<>(){}*?~#^\r\n\0]/
+    : /[$`%!&|;<>(){}*?~#^\\\r\n\0]/;
 
 function parseArgs(argv) {
   let projectDir = process.cwd();
@@ -104,9 +161,10 @@ function validateGate(projectDir, phase) {
   }
 
   if (diag.status !== 'READY') {
-    const blockerMsg = Array.isArray(diag.blockers) && diag.blockers.length > 0
-      ? diag.blockers.map((b) => b.message).join(' ')
-      : 'El repositorio no cumple los requisitos mínimos (Angular 21.0.0+).';
+    const blockerMsg =
+      Array.isArray(diag.blockers) && diag.blockers.length > 0
+        ? diag.blockers.map((b) => b.message).join(' ')
+        : 'El repositorio no cumple los requisitos mínimos (Angular 21.0.0+).';
     return {
       allowed: false,
       reason: `El diagnóstico está en estado "${diag.status}" (se requiere "READY"). Detalle: ${blockerMsg}`,
@@ -164,60 +222,526 @@ function validateGate(projectDir, phase) {
   };
 }
 
-function extractRawArgsText(event) {
-  const raw =
-    event.toolArgs ??
-    event.toolInput ??
-    event.tool_input ??
-    event.input ??
-    event.arguments ??
-    '';
-
+/**
+ * Strict camelCase contract for Copilot preToolUse: reads ONLY event.toolArgs.
+ * Accepts either a plain object or a JSON-serialized object string defensively
+ * (the official schema types toolArgs as `unknown`).
+ */
+function parseToolArgsObject(event) {
+  if (!Object.prototype.hasOwnProperty.call(event, 'toolArgs')) {
+    return null;
+  }
+  const raw = event.toolArgs;
+  if (raw === undefined || raw === null) {
+    return null;
+  }
   if (typeof raw === 'string') {
+    const trimmed = raw.trim();
+    if (!trimmed) return null;
+    try {
+      const parsed = JSON.parse(trimmed);
+      return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : null;
+    } catch {
+      return null;
+    }
+  }
+  if (typeof raw === 'object' && !Array.isArray(raw)) {
     return raw;
   }
+  return null;
+}
+
+/**
+ * Resolves the real filesystem path even when trailing segments do not exist yet,
+ * catching existing symlinks anywhere along the ancestor chain.
+ * Note: preToolUse path checks cannot prevent TOCTOU races between check and write.
+ */
+function resolveRealPathAllowingMissingTail(targetPath) {
+  const absolute = path.resolve(targetPath);
+  const missingSegments = [];
+  let current = absolute;
+
+  while (!fs.existsSync(current)) {
+    const parent = path.dirname(current);
+    if (parent === current) {
+      return absolute;
+    }
+    missingSegments.unshift(path.basename(current));
+    current = parent;
+  }
+
+  const realExisting = realpathNative(current);
+  return missingSegments.length > 0
+    ? path.join(realExisting, ...missingSegments)
+    : realExisting;
+}
+
+function isStrictSubpathOrEqual(baseDir, candidatePath, { allowEqual = false } = {}) {
+  const rel = path.relative(baseDir, candidatePath);
+  if (rel === '') {
+    return allowEqual;
+  }
+  if (path.isAbsolute(rel)) {
+    return false;
+  }
+  const segments = rel.split(path.sep);
+  return segments[0] !== '..' && !segments.includes('..');
+}
+
+/**
+ * Closed grammar tokenizer for authorized plugin script invocations only.
+ * Disallows shell metacharacters, variable expansions, and escape ambiguity.
+ */
+function tokenizeClosedCommand(command) {
+  if (typeof command !== 'string') return null;
+  const trimmed = command.trim();
+  if (!trimmed || FORBIDDEN_SHELL_CHARS_REGEX.test(trimmed)) {
+    return null;
+  }
+  // On Windows, also disallow backslash immediately before a quote to avoid escape ambiguity
+  if (process.platform === 'win32' && /\\["']/.test(trimmed)) {
+    return null;
+  }
+
+  const tokens = [];
+  let current = '';
+  let inToken = false;
+  let quote = null;
+
+  for (let i = 0; i < trimmed.length; i++) {
+    const ch = trimmed[i];
+
+    if (quote) {
+      if (ch === quote) {
+        quote = null;
+      } else {
+        current += ch;
+      }
+      continue;
+    }
+
+    if (ch === '"' || ch === "'") {
+      quote = ch;
+      inToken = true;
+      continue;
+    }
+
+    if (ch === ' ' || ch === '\t') {
+      if (inToken) {
+        tokens.push(current);
+        current = '';
+        inToken = false;
+      }
+      continue;
+    }
+
+    current += ch;
+    inToken = true;
+  }
+
+  if (quote !== null) {
+    return null; // Unbalanced quote
+  }
+  if (inToken) {
+    tokens.push(current);
+  }
+  return tokens.length > 0 ? tokens : null;
+}
+
+function isAllowedNodeExecutable(execToken) {
+  if (!execToken || typeof execToken !== 'string') return false;
+
+  // Priority 1: explicit absolute path matching the current Node.js runtime binary
+  if (path.isAbsolute(execToken)) {
+    try {
+      return realpathNative(execToken) === realpathNative(process.execPath);
+    } catch {
+      return false;
+    }
+  }
+
+  // Priority 2: bare `node` / `node.exe` (relies on environment PATH; relative paths like ./node are rejected)
+  const lower = execToken.toLowerCase();
+  return lower === 'node' || lower === 'node.exe';
+}
+
+function isProjectArgWithinWorkspace(projectArg, projectDir) {
+  if (!projectArg || typeof projectArg !== 'string' || projectArg.startsWith('-')) {
+    return false;
+  }
+  if (isUncPath(projectArg)) {
+    return false;
+  }
   try {
-    return JSON.stringify(raw);
+    const workspaceReal = resolveRealPathAllowingMissingTail(projectDir);
+    const targetReal = resolveRealPathAllowingMissingTail(path.resolve(projectDir, projectArg));
+    return isStrictSubpathOrEqual(workspaceReal, targetReal, { allowEqual: true });
   } catch {
-    return '';
+    return false;
   }
 }
 
-function shouldAllowWithoutMigrationGate(event) {
-  if (!event || typeof event !== 'object') return true;
-  const toolName = String(event.toolName || event.tool_name || '').trim().toLowerCase();
+function validateScriptContractArgs(scriptName, args, projectDir) {
+  let seenProject = false;
+  let seenPhase = false;
+  let seenHook = false;
 
-  if (!toolName) return true;
+  for (let i = 0; i < args.length; i++) {
+    const flag = args[i];
 
-  // Always allow known read-only, search, UI, and delegation tools
-  if (ALWAYS_ALLOWED_TOOLS.has(toolName)) {
-    return true;
+    if (flag === '--project' || flag === '-p') {
+      if (seenProject) return false;
+      const val = args[i + 1];
+      if (!val || !isProjectArgWithinWorkspace(val, projectDir)) {
+        return false;
+      }
+      seenProject = true;
+      i++;
+      continue;
+    }
+
+    if (scriptName === 'verify-artifacts-gate.mjs' && flag === '--phase') {
+      if (seenPhase) return false;
+      const val = args[i + 1];
+      if (val !== 'plan' && val !== 'migrate') return false;
+      seenPhase = true;
+      i++;
+      continue;
+    }
+
+    if (scriptName === 'verify-artifacts-gate.mjs' && flag === '--hook') {
+      if (seenHook) return false;
+      seenHook = true;
+      continue;
+    }
+
+    // Reject unknown flags, extra positional args, or Node options
+    return false;
   }
 
-  // Only enforce the gate on mutating/shell tools; let unknown read/helper tools pass
-  const isMutating = MUTATING_TOOL_PATTERNS.some((p) => toolName.includes(p));
-  if (!isMutating) {
-    return true;
+  return true;
+}
+
+function isApprovedPluginScriptInvocation(command, projectDir) {
+  const tokens = tokenizeClosedCommand(command);
+  if (!tokens || tokens.length < 2) return false;
+
+  const [execToken, scriptToken, ...restArgs] = tokens;
+  if (!isAllowedNodeExecutable(execToken)) return false;
+
+  // Reject any Node CLI option before the script path (e.g., node -e, node --eval, node -r)
+  if (scriptToken.startsWith('-')) return false;
+
+  const resolvedScript = path.resolve(projectDir, scriptToken);
+  let realScript;
+  try {
+    realScript = realpathNative(resolvedScript);
+  } catch {
+    return false;
   }
 
-  const argsText = extractRawArgsText(event);
-
-  // Always allow running the plugin's own prerequisite/diagnosis/gate validator scripts
-  if (
-    argsText.includes('check-prereqs.mjs') ||
-    argsText.includes('generate-diagnosis-report.mjs') ||
-    argsText.includes('verify-artifacts-gate.mjs')
-  ) {
-    return true;
+  const matchedScriptName = TRUSTED_SCRIPT_REALPATHS.get(realScript);
+  if (!matchedScriptName) {
+    return false;
   }
 
-  // Always allow creating/editing files inside .migration-artifacts/karma-to-vitest
-  const normalizedArgs = argsText.replace(/\\\\/g, '/').replace(/\\/g, '/');
-  if (normalizedArgs.includes('.migration-artifacts/karma-to-vitest')) {
-    return true;
+  return validateScriptContractArgs(matchedScriptName, restArgs, projectDir);
+}
+
+// =============================================================================
+// Per-tool target extraction adapters (conservative, schema-aware)
+// =============================================================================
+
+function isUncPath(raw) {
+  return /^\\\\/.test(raw) || /^\/\/[^/]/.test(raw);
+}
+
+function normalizeTargetPath(rawTarget) {
+  if (typeof rawTarget !== 'string') return null;
+  const trimmed = rawTarget.trim();
+  if (!trimmed || trimmed.includes('\0') || isUncPath(trimmed)) {
+    return null;
   }
 
-  return false;
+  if (/^file:\/\//i.test(trimmed)) {
+    try {
+      const converted = fileURLToPath(trimmed);
+      if (!converted || isUncPath(converted)) return null;
+      return converted;
+    } catch {
+      return null;
+    }
+  }
+
+  // Reject any non-file URI scheme (http://, vscode-remote://, untitled://, etc.)
+  if (/^[a-zA-Z][a-zA-Z0-9+.-]*:\/\//.test(trimmed)) {
+    return null;
+  }
+
+  // Reject Windows drive-letter paths on POSIX hosts (avoid treating C:\... as relative filename)
+  if (process.platform !== 'win32' && /^[a-zA-Z]:[\\/]/.test(trimmed)) {
+    return null;
+  }
+
+  return trimmed;
+}
+
+function getExactlyOneStringField(argsObj, candidateKeys, forbiddenKeys = []) {
+  for (const forbidden of forbiddenKeys) {
+    if (Object.prototype.hasOwnProperty.call(argsObj, forbidden)) {
+      return null;
+    }
+  }
+  const found = [];
+  for (const key of candidateKeys) {
+    if (Object.prototype.hasOwnProperty.call(argsObj, key)) {
+      const val = argsObj[key];
+      if (typeof val !== 'string' || !val.trim()) return null;
+      found.push(val);
+    }
+  }
+  return found.length === 1 ? found[0] : null;
+}
+
+const UNEXPECTED_MULTI_KEYS = [
+  'paths',
+  'files',
+  'edits',
+  'changes',
+  'oldPath',
+  'newPath',
+  'sourcePath',
+  'destinationPath',
+  'from',
+  'to',
+];
+
+function extractEditTargets(argsObj) {
+  const target = getExactlyOneStringField(argsObj, ['path', 'filePath', 'uri'], UNEXPECTED_MULTI_KEYS);
+  return target ? [target] : null;
+}
+
+function extractCreateTargets(argsObj) {
+  const target = getExactlyOneStringField(argsObj, ['path', 'filePath', 'uri'], UNEXPECTED_MULTI_KEYS);
+  return target ? [target] : null;
+}
+
+function extractDeleteTargets(argsObj) {
+  const target = getExactlyOneStringField(argsObj, ['path', 'filePath', 'uri'], UNEXPECTED_MULTI_KEYS);
+  return target ? [target] : null;
+}
+
+function extractPairTargets(argsObj) {
+  const source = getExactlyOneStringField(argsObj, ['oldPath', 'sourcePath', 'from']);
+  const dest = getExactlyOneStringField(argsObj, ['newPath', 'destinationPath', 'to']);
+  if (!source || !dest) return null;
+  return [source, dest];
+}
+
+function extractRenameTargets(argsObj) {
+  return extractPairTargets(argsObj);
+}
+
+function extractMoveTargets(argsObj) {
+  return extractPairTargets(argsObj);
+}
+
+function extractPatchTargets(argsObj) {
+  const patchText = getExactlyOneStringField(argsObj, ['patch', 'input', 'diff']);
+  if (!patchText) return null;
+
+  const lines = patchText.split(/\r?\n/);
+  const hasBegin = lines.some((l) => l.trim() === '*** Begin Patch');
+  const hasEnd = lines.some((l) => l.trim() === '*** End Patch');
+  if (!hasBegin || !hasEnd) {
+    return null; // Reject incomplete or unrecognized patch envelope
+  }
+
+  const targets = [];
+  for (const line of lines) {
+    const match = line.match(/^\*\*\*\s+(Add File|Update File|Delete File|Move to):(.*)$/);
+    if (match) {
+      const target = match[2].trim();
+      if (!target) {
+        return null; // Incomplete header with empty filename
+      }
+      targets.push(target);
+    }
+  }
+
+  return targets.length > 0 ? targets : null;
+}
+
+const FILE_MUTATION_ADAPTERS = new Map([
+  ['edit', extractEditTargets],
+  ['create', extractCreateTargets],
+  ['delete', extractDeleteTargets],
+  ['rename', extractRenameTargets],
+  ['move', extractMoveTargets],
+  ['apply_patch', extractPatchTargets],
+  ['patch', extractPatchTargets],
+]);
+
+/**
+ * Classifies a single target path into:
+ *   - 'INVALID'            -> malformed path/URI, UNC path, symlink escape from artifacts, or outside workspace
+ *   - 'INSIDE_ARTIFACTS'   -> resolves strictly inside <project>/.migration-artifacts/karma-to-vitest
+ *   - 'INSIDE_WORKSPACE'   -> resolves inside <project> outside artifacts (requires migration gate)
+ */
+function classifyTargetPath(rawTarget, projectDir) {
+  const normalized = normalizeTargetPath(rawTarget);
+  if (!normalized) {
+    return { kind: 'INVALID', reason: `Ruta o URI de destino inválida o no verificable: "${rawTarget}".` };
+  }
+
+  const workspaceAbs = path.resolve(projectDir);
+  const artifactsAbs = path.resolve(projectDir, ARTIFACTS_SUBDIR);
+  const candidateAbs = path.resolve(projectDir, normalized);
+
+  let workspaceReal;
+  let artifactsReal;
+  let candidateReal;
+  try {
+    workspaceReal = resolveRealPathAllowingMissingTail(workspaceAbs);
+    artifactsReal = resolveRealPathAllowingMissingTail(artifactsAbs);
+    candidateReal = resolveRealPathAllowingMissingTail(candidateAbs);
+  } catch {
+    return { kind: 'INVALID', reason: `No se pudo resolver la ruta real para "${rawTarget}".` };
+  }
+
+  // Symlink escape detection: lexically claims to be inside artifacts, but realpath escapes artifacts
+  const lexicallyInArtifacts = isStrictSubpathOrEqual(artifactsAbs, candidateAbs, { allowEqual: false });
+  const reallyInArtifacts = isStrictSubpathOrEqual(artifactsReal, candidateReal, { allowEqual: false });
+
+  if (lexicallyInArtifacts && !reallyInArtifacts) {
+    return {
+      kind: 'INVALID',
+      reason: `Escape mediante symlink detectado fuera de ${ARTIFACTS_SUBDIR} en "${rawTarget}".`,
+    };
+  }
+
+  // Out-of-workspace mutation is unconditionally denied (even with approved workflow)
+  const reallyInWorkspace = isStrictSubpathOrEqual(workspaceReal, candidateReal, { allowEqual: false });
+  if (!reallyInWorkspace) {
+    return {
+      kind: 'INVALID',
+      reason: `El destino "${rawTarget}" resuelve fuera del workspace actual (${projectDir}).`,
+    };
+  }
+
+  if (reallyInArtifacts) {
+    return { kind: 'INSIDE_ARTIFACTS' };
+  }
+
+  return { kind: 'INSIDE_WORKSPACE' };
+}
+
+/**
+ * Evaluates a preToolUse hook event into one of three explicit outcomes:
+ *   - { decision: 'DENY', reason }          -> Unconditional deny (never bypassed by workflow approval)
+ *   - { decision: 'NO_DECISION' }           -> Emit {} (delegate to normal harness permission flow)
+ *   - { decision: 'REQUIRE_GATE' }          -> Allow NO_DECISION only if validateGate(migrate) passes
+ */
+function evaluateToolCall(event, projectDir) {
+  // 1. Strict camelCase preToolUse event validation
+  if (!event || typeof event !== 'object' || Array.isArray(event)) {
+    return {
+      decision: 'DENY',
+      reason: 'Payload de hook preToolUse inválido o vacío (denegación fail-closed).',
+    };
+  }
+
+  if (typeof event.toolName !== 'string' || !event.toolName.trim()) {
+    return {
+      decision: 'DENY',
+      reason: 'Falta el campo oficial "toolName" en el evento preToolUse (denegación fail-closed).',
+    };
+  }
+
+  const toolName = event.toolName.trim().toLowerCase();
+
+  // 2. Unconditionally block subagent delegation inside Migrator
+  if (BLOCKED_DELEGATION_TOOLS.has(toolName)) {
+    return {
+      decision: 'DENY',
+      reason: `La herramienta de delegación "${toolName}" está bloqueada dentro de Karma-Vitest Migrator para evitar mutaciones no auditadas en subagentes.`,
+    };
+  }
+
+  // 3. Officially documented read-only / non-mutating runtime tools
+  if (READ_ONLY_RUNTIME_TOOLS.has(toolName)) {
+    return { decision: 'NO_DECISION' };
+  }
+
+  // 4. Known shell runtime tools (bash, powershell)
+  if (SHELL_RUNTIME_TOOLS.has(toolName)) {
+    const argsObj = parseToolArgsObject(event);
+    const command =
+      argsObj && typeof argsObj.command === 'string' && argsObj.command.trim()
+        ? argsObj.command
+        : null;
+
+    if (!command) {
+      return {
+        decision: 'DENY',
+        reason: `Argumentos inválidos o sin campo "command" para la herramienta "${toolName}".`,
+      };
+    }
+
+    if (isApprovedPluginScriptInvocation(command, projectDir)) {
+      return { decision: 'NO_DECISION' };
+    }
+
+    return { decision: 'REQUIRE_GATE' };
+  }
+
+  // 5. Known file mutation tools with dedicated per-tool adapters
+  if (FILE_MUTATION_ADAPTERS.has(toolName)) {
+    const argsObj = parseToolArgsObject(event);
+    if (!argsObj) {
+      return {
+        decision: 'DENY',
+        reason: `Argumentos "toolArgs" inválidos o vacíos para la herramienta "${toolName}".`,
+      };
+    }
+
+    const extractTargets = FILE_MUTATION_ADAPTERS.get(toolName);
+    const targets = extractTargets(argsObj);
+    if (!targets || targets.length === 0) {
+      return {
+        decision: 'DENY',
+        reason: `No se pudieron verificar todos los destinos de la herramienta "${toolName}" según su esquema esperado.`,
+      };
+    }
+
+    let allInsideArtifacts = true;
+    for (const target of targets) {
+      const classification = classifyTargetPath(target, projectDir);
+      if (classification.kind === 'INVALID') {
+        return { decision: 'DENY', reason: classification.reason };
+      }
+      if (classification.kind !== 'INSIDE_ARTIFACTS') {
+        allInsideArtifacts = false;
+      }
+    }
+
+    return allInsideArtifacts ? { decision: 'NO_DECISION' } : { decision: 'REQUIRE_GATE' };
+  }
+
+  // 6. Unknown tool -> UNCONDITIONAL DENY (never bypassed by workflow approval)
+  return {
+    decision: 'DENY',
+    reason: `Herramienta desconocida o no autorizada "${event.toolName}" en Karma-Vitest Migrator (default-deny).`,
+  };
+}
+
+function emitDeny(reason) {
+  process.stdout.write(
+    `${JSON.stringify({
+      permissionDecision: 'deny',
+      permissionDecisionReason: reason,
+    })}\n`
+  );
 }
 
 function runHookMode(defaultProjectDir) {
@@ -228,32 +752,38 @@ function runHookMode(defaultProjectDir) {
     stdinText = '';
   }
 
-  let event = {};
+  let event = null;
   if (stdinText) {
     try {
       event = JSON.parse(stdinText);
     } catch {
-      event = {};
+      event = null;
     }
   }
 
-  if (shouldAllowWithoutMigrationGate(event)) {
+  const projectDir =
+    event && typeof event === 'object' && typeof event.cwd === 'string' && event.cwd.trim()
+      ? path.resolve(event.cwd)
+      : defaultProjectDir;
+
+  const evaluation = evaluateToolCall(event, projectDir);
+
+  if (evaluation.decision === 'NO_DECISION') {
     process.stdout.write('{}\n');
-    process.exit(0);
+    return;
   }
 
-  const projectDir = event.cwd ? path.resolve(event.cwd) : defaultProjectDir;
-  const check = validateGate(projectDir, 'migrate');
+  if (evaluation.decision === 'DENY') {
+    emitDeny(evaluation.reason);
+    return;
+  }
 
+  // REQUIRE_GATE: authorize NO_DECISION only when workflow artifacts are READY & APPROVED
+  const check = validateGate(projectDir, 'migrate');
   if (check.allowed) {
     process.stdout.write('{}\n');
   } else {
-    process.stdout.write(
-      `${JSON.stringify({
-        permissionDecision: 'deny',
-        permissionDecisionReason: check.reason,
-      })}\n`
-    );
+    emitDeny(check.reason);
   }
 }
 
@@ -267,10 +797,14 @@ function main() {
 
   const result = validateGate(projectDir, phase);
   if (result.allowed) {
-    process.stdout.write(`${JSON.stringify({ status: 'ALLOWED', phase, message: result.reason }, null, 2)}\n`);
+    process.stdout.write(
+      `${JSON.stringify({ status: 'ALLOWED', phase, message: result.reason }, null, 2)}\n`
+    );
     process.exit(0);
   } else {
-    process.stderr.write(`${JSON.stringify({ status: 'DENIED', phase, message: result.reason }, null, 2)}\n`);
+    process.stderr.write(
+      `${JSON.stringify({ status: 'DENIED', phase, message: result.reason }, null, 2)}\n`
+    );
     process.exit(1);
   }
 }
