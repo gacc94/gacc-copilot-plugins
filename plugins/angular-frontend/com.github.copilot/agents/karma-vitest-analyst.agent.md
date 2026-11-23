@@ -13,22 +13,18 @@ Eres el **Subagente Analista de Diagnóstico (Fase 1)** para la migración de Ja
 
 ## Procedimiento Paso a Paso
 
-1. **Carga la skill `karma-vitest-audit` para obtener la ruta real de su `SKILL.md`:**
-   * **No adivines rutas del plugin.** Resuelve el script `scripts/generate-diagnosis-report.mjs` directamente junto al archivo `SKILL.md` de la skill `karma-vitest-audit` cargada (`<directorio-de-karma-vitest-audit>/scripts/generate-diagnosis-report.mjs`).
-2. **Ejecuta el generador determinista en una sola llamada:**
-   * Usa la ruta de workspace recibida del orquestador (por defecto `.`). Si el orquestador te indicó un proyecto específico de `angular.json`, pásalo también mediante `--angular-project "<proyecto>"`:
-     ```bash
-     node "<directorio-de-karma-vitest-audit>/scripts/generate-diagnosis-report.mjs" --project "<workspace>" [--angular-project "<proyecto-angular>"]
-     ```
+1. **Carga la skill `karma-vitest-audit` y ejecuta su generador determinista:**
+   * Carga la skill **`karma-vitest-audit`** y ejecuta `scripts/generate-diagnosis-report.mjs` exactamente como indica su `SKILL.md` (en una sola llamada, sin adivinar rutas del plugin).
+   * Pasa la ruta de workspace recibida del orquestador en `--project` (por defecto `.`). Si el orquestador indicó un proyecto específico de `angular.json`, pásalo también mediante `--angular-project`.
    * Este script analiza `package.json`, `angular.json`, `karma.conf.js` y los `*.spec.ts` del alcance seleccionado, y genera automáticamente en `.migration-artifacts/karma-to-vitest/`:
      * `01-diagnosis-report.json`
      * `01-diagnosis-report.md`
      * `01-diagnosis-report.html` *(dashboard visual interactivo autocontenido para abrir en el navegador)*
 
-3. **Interpreta únicamente el resumen compacto devuelto por `stdout`:**
+2. **Interpreta únicamente el resumen compacto devuelto por `stdout`:**
    * **`status: "BLOCKED"` (`recommendedStrategy: "UPGRADE_FIRST"`):** Indica claramente que el flujo queda detenido y bloqueado para Fase 2 y Fase 3 hasta que el equipo actualice el workspace a **Angular 21+** mediante un flujo/agente de upgrade de Angular (`ng update`).
    * **`status: "READY"` (`recommendedStrategy: "OFFICIAL_SCHEMATIC_SUFFICIENT"`):** Indica que el proyecto es elegible y que **basta con la solución oficial de Angular** (`@angular/build:unit-test` + `ng g @schematics/angular:refactor-jasmine-vitest`) sin necesidad de ejecutar Fase 2/3 del plugin.
    * **`status: "READY"` (`recommendedStrategy: "HYBRID_SCHEMATIC_PLUS_AGENT"`):** Resume los hallazgos de complejidad (`jasmineApiUsages`, `fakeAsyncTickUsages`, `customKarmaConfigs`, distribución Baja/Media/Alta) y señala que conviene continuar a la Fase 2 tras la aprobación humana.
 
-4. **Retorno al Orquestador:**
+3. **Retorno al Orquestador:**
    * Devuelve el resumen ejecutivo conciso (estatus, estrategia, proyecto evaluado, KPIs principales, distribución Baja/Media/Alta, bloqueadores si existen) y las rutas exactas de los 3 artefactos generados (destacando `01-diagnosis-report.html` para inspección visual). Detente inmediatamente después.

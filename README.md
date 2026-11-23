@@ -31,7 +31,7 @@ gacc-copilot-plugins/
 │   ├── verify-artifacts-gate.test.mjs        # Pruebas de seguridad y contrato del gate (node:test)
 │   └── plugin-structure.test.mjs             # Pruebas de integridad Agent Plugins 1.0 y marketplace
 └── plugins/
-    └── angular-frontend/                     # Plugin Angular (Karma → Vitest, v2.0.0)
+    └── angular-frontend/                     # Plugin Angular (Karma → Vitest, v2.0.1)
         ├── plugin.json                       # Manifiesto Agent Plugins 1.0 ($schema)
         ├── README.md
         ├── skills/                           # Skills portables (con sus scripts/ y references/)
@@ -99,7 +99,7 @@ Para iterar rápidamente sobre un plugin local sin reinstalarlo desde el catálo
 
 | Plugin | Ruta (`source`) | Versión | Descripción | Documentación |
 | :--- | :--- | :---: | :--- | :--- |
-| **`angular-frontend`** | `./plugins/angular-frontend` | `2.0.0` | Diagnóstico visual/estructurado (`.json`, `.md`, `.html`), planificación ejecutable y migración determinista de Karma a Vitest (Angular 21+), en formato Agent Plugins 1.0 para VS Code y Copilot CLI. | [Ver README](./plugins/angular-frontend/README.md) |
+| **`angular-frontend`** | `./plugins/angular-frontend` | `2.0.1` | Diagnóstico visual/estructurado (`.json`, `.md`, `.html`), planificación ejecutable y migración determinista de Karma a Vitest (Angular 21+), en formato Agent Plugins 1.0 para VS Code y Copilot CLI. | [Ver README](./plugins/angular-frontend/README.md) |
 
 ---
 

@@ -271,16 +271,19 @@ test('Hook (Planner --phase plan): blocks source edits, arbitrary shell, and dia
     assertNoDecision(runHookGate(writePlanJson, dir, 'plan'), 'Planner may write 02-migration-plan.json after diagnosis approval');
     assertNoDecision(runHookGate(writePlanMd, dir, 'plan'), 'Planner may write 02-migration-plan.md after diagnosis approval');
 
-    // Even with FULL workflow approval, Planner is NEVER allowed to touch source files, diagnosis artifacts, other artifacts, or arbitrary shell
+    // Even with FULL workflow approval, Planner is NEVER allowed to touch source files, diagnosis artifacts, other artifacts, ../ traversal, symlinks, or arbitrary shell
     approveWorkflow(dir);
-    assertDenied(
-      runHookGate(
-        { cwd: dir, toolName: 'edit', toolArgs: { path: 'src/app.component.ts', new_str: '// edit' } },
-        dir,
-        'plan'
-      ),
-      'Planner must NEVER edit source code'
+    const artDir = path.join(dir, ARTIFACTS_REL);
+    fs.symlinkSync(path.join(dir, 'src'), path.join(artDir, 'plan-escape-link'), 'dir');
+
+    const deniedSrc = runHookGate(
+      { cwd: dir, toolName: 'edit', toolArgs: { path: 'src/app.component.ts', new_str: '// edit' } },
+      dir,
+      'plan'
     );
+    assertDenied(deniedSrc, 'Planner must NEVER edit source code');
+    assert.match(deniedSrc.permissionDecisionReason, /\.migration-artifacts/);
+
     assertDenied(
       runHookGate(
         { cwd: dir, toolName: 'edit', toolArgs: { path: 'package.json', new_str: '{}' } },
@@ -288,6 +291,42 @@ test('Hook (Planner --phase plan): blocks source edits, arbitrary shell, and dia
         'plan'
       ),
       'Planner must NEVER edit package.json'
+    );
+    assertDenied(
+      runHookGate(
+        {
+          cwd: dir,
+          toolName: 'edit',
+          toolArgs: { path: '.migration-artifacts/karma-to-vitest/../../package.json', new_str: '{}' },
+        },
+        dir,
+        'plan'
+      ),
+      'Planner must NEVER escape .migration-artifacts/karma-to-vitest via ../ traversal'
+    );
+    assertDenied(
+      runHookGate(
+        {
+          cwd: dir,
+          toolName: 'create',
+          toolArgs: { path: '.migration-artifacts/karma-to-vitest/../02-migration-plan.json', content: '{}' },
+        },
+        dir,
+        'plan'
+      ),
+      'Planner must NEVER write into parent directory via ../ traversal'
+    );
+    assertDenied(
+      runHookGate(
+        {
+          cwd: dir,
+          toolName: 'edit',
+          toolArgs: { path: '.migration-artifacts/karma-to-vitest/plan-escape-link/app.component.ts', new_str: '// x' },
+        },
+        dir,
+        'plan'
+      ),
+      'Planner must NEVER escape .migration-artifacts/karma-to-vitest via symlink'
     );
     assertDenied(
       runHookGate(

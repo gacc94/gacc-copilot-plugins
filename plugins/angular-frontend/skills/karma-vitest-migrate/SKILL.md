@@ -9,15 +9,15 @@ Esta skill controla la ejecución determinista de la **Fase 3 (Implementación)*
 
 ## 1. Verificación del Gate de Artefactos (`scripts/verify-artifacts-gate.mjs`)
 
-Resuelve el script `scripts/verify-artifacts-gate.mjs` **directamente junto al archivo `SKILL.md` de esta skill** (sin adivinar rutas del plugin). Soporta dos modos de operación:
+Ejecuta `scripts/verify-artifacts-gate.mjs` ubicado en el directorio de esta skill (ruta relativa al directorio que contiene este `SKILL.md`). Soporta dos modos de operación:
 
 ### A. Modo CLI (`--phase plan` o `--phase migrate`)
 ```bash
 # Validar antes de generar el plan (Fase 2): exige 01-diagnosis-report.json con status=READY y approval.status=APPROVED
-node "<directorio-de-esta-skill>/scripts/verify-artifacts-gate.mjs" --project "." --phase plan
+node scripts/verify-artifacts-gate.mjs --project "." --phase plan
 
 # Validar antes de ejecutar la migración (Fase 3): exige además 02-migration-plan.json con approval.status=APPROVED
-node "<directorio-de-esta-skill>/scripts/verify-artifacts-gate.mjs" --project "." --phase migrate
+node scripts/verify-artifacts-gate.mjs --project "." --phase migrate
 ```
 
 ### B. Modo Hook `preToolUse` del Copilot Harness (`--hook --phase <plan|migrate>`)

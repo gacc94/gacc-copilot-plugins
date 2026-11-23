@@ -14,8 +14,23 @@ const AGENTS_DIR = path.join(PLUGIN_ROOT, 'com.github.copilot', 'agents');
 const LEGACY_AGENTS_DIR = path.join(PLUGIN_ROOT, 'agents');
 const SKILLS_DIR = path.join(PLUGIN_ROOT, 'skills');
 
+// Constructed dynamically so the forbidden placeholder literal does not appear anywhere in the repository
+const FORBIDDEN_PLUGIN_PATH_PLACEHOLDER = '<ruta-' + 'del-plugin>';
+
 function readJson(filePath) {
   return JSON.parse(fs.readFileSync(filePath, 'utf8'));
+}
+
+function collectAllFiles(dir, acc = []) {
+  for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+    const full = path.join(dir, entry.name);
+    if (entry.isDirectory()) {
+      collectAllFiles(full, acc);
+    } else if (entry.isFile()) {
+      acc.push(full);
+    }
+  }
+  return acc;
 }
 
 function parseFrontmatter(mdContent) {
@@ -60,7 +75,11 @@ test('Marketplace: validates full official .github/plugin/marketplace.json contr
 
     const manifest = readJson(resolvedManifestPath);
     assert.equal(entry.name, manifest.name, `Plugin name mismatch for ${entry.source}`);
-    assert.equal(entry.version, manifest.version, `Plugin version mismatch between marketplace.json and ${entry.source}/plugin.json`);
+    assert.equal(
+      entry.version,
+      manifest.version,
+      `Plugin version mismatch between marketplace.json and ${entry.source}/plugin.json`
+    );
   }
 });
 
@@ -69,7 +88,7 @@ test('Agent Plugins 1.0: plugin.json declares official schema without legacy com
 
   assert.equal(manifest.$schema, 'https://agent-plugins.org/schemas/1.0.0/plugin.schema.json');
   assert.equal(manifest.name, 'angular-frontend');
-  assert.equal(manifest.version, '2.0.0');
+  assert.equal(manifest.version, '2.0.1');
   assert.equal(manifest.agents, undefined, 'Agent Plugins 1.0 must not declare legacy top-level "agents"');
   assert.equal(manifest.skills, undefined, 'Agent Plugins 1.0 must not declare legacy top-level "skills"');
   assert.match(manifest.description, /Copilot CLI/i, 'Description should reflect both VS Code and Copilot CLI scope');
@@ -79,7 +98,21 @@ test('Agent Plugins 1.0: plugin.json declares official schema without legacy com
   assert.ok(fs.existsSync(SKILLS_DIR), 'skills/ must remain at plugin root');
 });
 
-test('Schemas and Skills: valid JSON schemas and zero ambiguous <ruta-del-plugin> placeholders', () => {
+test('Plugin Integrity: zero unresolvable plugin-path placeholders anywhere in plugins/angular-frontend', () => {
+  const pluginFiles = collectAllFiles(PLUGIN_ROOT);
+  assert.ok(pluginFiles.length > 0, 'Expected plugin files under plugins/angular-frontend');
+
+  for (const filePath of pluginFiles) {
+    const content = fs.readFileSync(filePath, 'utf8');
+    assert.equal(
+      content.includes(FORBIDDEN_PLUGIN_PATH_PLACEHOLDER),
+      false,
+      `Forbidden placeholder found in ${path.relative(REPO_ROOT, filePath)}`
+    );
+  }
+});
+
+test('Schemas and Skills: valid JSON schemas and every script mentioned in SKILL.md exists in its skill scripts/ folder', () => {
   const schemasDir = path.join(SKILLS_DIR, 'karma-vitest-audit', 'references');
   const schemaFiles = fs.readdirSync(schemasDir).filter((f) => f.endsWith('.schema.json'));
   assert.ok(schemaFiles.length >= 2, 'Expected diagnosis and migration plan schemas');
@@ -90,20 +123,41 @@ test('Schemas and Skills: valid JSON schemas and zero ambiguous <ruta-del-plugin
     assert.ok(parsed.$schema || parsed.type, `${file} must be a valid JSON Schema`);
   }
 
-  for (const skillName of fs.readdirSync(SKILLS_DIR)) {
-    const skillMdPath = path.join(SKILLS_DIR, skillName, 'SKILL.md');
-    if (fs.existsSync(skillMdPath)) {
-      const content = fs.readFileSync(skillMdPath, 'utf8');
-      assert.equal(
-        content.includes('<ruta-del-plugin>'),
-        false,
-        `${skillName}/SKILL.md must resolve scripts relative to SKILL.md, not via <ruta-del-plugin>`
+  const skillEntries = fs
+    .readdirSync(SKILLS_DIR, { withFileTypes: true })
+    .filter((e) => e.isDirectory())
+    .map((e) => e.name)
+    .sort();
+  assert.deepEqual(skillEntries, ['angular-migration-prereqs', 'karma-vitest-audit', 'karma-vitest-migrate']);
+
+  let verifiedScriptCount = 0;
+  for (const skillName of skillEntries) {
+    const skillDir = path.join(SKILLS_DIR, skillName);
+    const skillMdPath = path.join(skillDir, 'SKILL.md');
+    assert.ok(fs.existsSync(skillMdPath), `Missing SKILL.md in ${skillName}`);
+
+    const content = fs.readFileSync(skillMdPath, 'utf8');
+    const scriptMatches = [...content.matchAll(/\bscripts\/([a-zA-Z0-9._-]+\.mjs)\b/g)];
+    assert.ok(
+      scriptMatches.length > 0,
+      `${skillName}/SKILL.md should document its relative scripts/*.mjs invocation`
+    );
+
+    const uniqueScripts = new Set(scriptMatches.map((m) => m[1]));
+    for (const scriptFile of uniqueScripts) {
+      const fullScriptPath = path.join(skillDir, 'scripts', scriptFile);
+      assert.ok(
+        fs.existsSync(fullScriptPath),
+        `Script "scripts/${scriptFile}" referenced in ${skillName}/SKILL.md does not exist at ${fullScriptPath}`
       );
+      verifiedScriptCount++;
     }
   }
+
+  assert.ok(verifiedScriptCount >= 3, 'Expected at least 3 verified skill scripts across all skills');
 });
 
-test('Copilot Agents: frontmatter, delegation context, visibility, and agent-scoped preToolUse hooks on Planner & Migrator', () => {
+test('Copilot Agents: frontmatter, delegation context, no hardcoded node commands in body, and agent-scoped preToolUse hooks on Planner & Migrator', () => {
   const agentFiles = fs
     .readdirSync(AGENTS_DIR)
     .filter((f) => f.endsWith('.agent.md'))
@@ -121,24 +175,24 @@ test('Copilot Agents: frontmatter, delegation context, visibility, and agent-sco
 
   for (const file of agentFiles) {
     const content = fs.readFileSync(path.join(AGENTS_DIR, file), 'utf8');
-    assert.equal(
-      content.includes('<ruta-del-plugin>'),
-      false,
-      `${file} must not rely on unexpanded <ruta-del-plugin> placeholder`
-    );
-
     const { rawFrontmatter, body } = parseFrontmatter(content);
     const name = getScalarField(rawFrontmatter, 'name');
     const userInvocable = getScalarField(rawFrontmatter, 'user-invocable');
     const toolsLine = getScalarField(rawFrontmatter, 'tools') || '';
     const hasHooks = /^hooks:/m.test(rawFrontmatter);
-    const hasLocalAgentsWhitelist = /^agents:/m.test(rawFrontmatter);
 
     assert.ok(name, `${file} must declare a name`);
+    assert.equal(/^agents:/m.test(rawFrontmatter), false, `${file} must not declare Local-harness "agents:"`);
+    assert.equal(/^handoffs:/m.test(rawFrontmatter), false, `${file} must not declare Local-harness "handoffs:"`);
     assert.equal(
-      hasLocalAgentsWhitelist,
+      content.includes('agent/runSubagent'),
       false,
-      `${file} must not declare Local-harness-only "agents:" frontmatter`
+      `${file} must not reference Local-harness "agent/runSubagent"`
+    );
+    assert.equal(
+      /\bnode\s+["']?[^\n]*scripts\/[^\s"']+\.mjs/.test(body),
+      false,
+      `${file} body must delegate script command invocation to its SKILL.md instead of hardcoding a node path`
     );
 
     if (userInvocable === 'true') {

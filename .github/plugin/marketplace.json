@@ -6,13 +6,13 @@
   },
   "metadata": {
     "description": "Catálogo multi-plugin de GACC para GitHub Copilot en VS Code y Copilot CLI",
-    "version": "2.0.0"
+    "version": "2.0.1"
   },
   "plugins": [
     {
       "name": "angular-frontend",
-      "description": "Orquestador, subagentes, skills y hook preToolUse para Angular: diagnóstico, planificación ejecutable y migración determinista de Jasmine/Karma a Vitest (Angular 21+)",
-      "version": "2.0.0",
+      "description": "Orquestador, subagentes, skills y hooks preToolUse para Angular: diagnóstico, planificación ejecutable y migración determinista de Jasmine/Karma a Vitest (Angular 21+)",
+      "version": "2.0.1",
       "source": "./plugins/angular-frontend"
     }
   ]

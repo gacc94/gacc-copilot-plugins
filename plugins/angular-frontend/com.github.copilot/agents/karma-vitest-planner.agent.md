@@ -22,11 +22,7 @@ Eres el **Subagente Planificador de Migración (Fase 2)** para la transición de
 ## Procedimiento Paso a Paso
 
 1. **Verificación obligatoria del Gate de Fase 2:**
-   * Carga la skill **`karma-vitest-migrate`** y resuelve el script `scripts/verify-artifacts-gate.mjs` directamente junto a su `SKILL.md` (**no adivines rutas del plugin**).
-   * Ejecuta el validador en modo `--phase plan` usando la ruta de workspace recibida del orquestador:
-     ```bash
-     node "<directorio-de-karma-vitest-migrate>/scripts/verify-artifacts-gate.mjs" --project "<workspace>" --phase plan
-     ```
+   * Carga la skill **`karma-vitest-migrate`** y ejecuta su validador de gate (`scripts/verify-artifacts-gate.mjs`) en modo `--phase plan` tal como indica su `SKILL.md`, pasando la ruta de workspace recibida del orquestador en `--project` (**no adivines rutas del plugin**).
    * Si el comando devuelve un código distinto de `0` (por ejemplo, no existe `01-diagnosis-report.json`, su `status` es `"BLOCKED"` o `approval.status` no es `"APPROVED"`), **aborta inmediatamente** y devuelve el mensaje de bloqueo al orquestador sin generar ningún plan.
 2. **Construcción del Plan Ejecutable Determinista:**
    * Carga la skill **`karma-vitest-audit`** para consultar `references/migration-plan.schema.json` y `references/jasmine-to-vitest-patterns.md`.
