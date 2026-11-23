@@ -14,26 +14,57 @@ Plugin en formato **Agent Plugins 1.0** para **GitHub Copilot (VS Code con Copil
 
 ---
 
-## 2. Configuración del Plugin
+## 2. Configuración e Instalación del Plugin
 
-### Desde el Marketplace `gacc-copilot-plugins` (Recomendado)
-Si ya registraste el marketplace raíz (con `.github/plugin/marketplace.json` en `~/.copilot/settings.json`, vía `/plugin marketplace add` en VS Code o `copilot plugin marketplace add` en Copilot CLI), instala y habilita este plugin:
+### A. Desde Repositorio Remoto en GitHub (Recomendado)
 
-```text
-/plugin install angular-frontend@gacc-copilot-plugins
-```
+Registra el marketplace remoto `gacc94/gacc-copilot-plugins` (o `<tu-org>/gacc-copilot-plugins` si usas un fork) e instala el plugin directamente sin clonar el repositorio.
 
-### Carga directa en local (`settings.json` de VS Code)
-Para habilitar únicamente este plugin desde tu disco local durante el desarrollo:
-
-```json
-{
-  "chat.plugins.enabled": true,
-  "chat.pluginLocations": {
-    "/Users/gustavocaqui/Development/gacc/projects/plugins/gacc-copilot-plugins/plugins/angular-frontend": true
+* **En VS Code Copilot Chat:**
+  ```text
+  /plugin marketplace add gacc94/gacc-copilot-plugins
+  /plugin install angular-frontend@gacc-copilot-plugins
+  ```
+* **En GitHub Copilot CLI:**
+  ```bash
+  copilot plugin marketplace add gacc94/gacc-copilot-plugins
+  copilot plugin install angular-frontend@gacc-copilot-plugins
+  ```
+* **Declarativo en `~/.copilot/settings.json` (usuario) o `.github/copilot/settings.json` (proyecto):**
+  ```json
+  {
+    "extraKnownMarketplaces": {
+      "gacc-copilot-plugins": {
+        "source": {
+          "source": "github",
+          "repo": "gacc94/gacc-copilot-plugins"
+        }
+      }
+    },
+    "enabledPlugins": {
+      "angular-frontend@gacc-copilot-plugins": true
+    }
   }
-}
-```
+  ```
+
+### B. Desde Clon Local (Desarrollo o Uso Offline)
+
+Si clonaste el repositorio en tu máquina (por ejemplo `/Users/<usuario>/gacc-copilot-plugins`):
+
+* **Vía marketplace local en VS Code Copilot Chat:**
+  ```text
+  /plugin marketplace add /Users/<usuario>/gacc-copilot-plugins
+  /plugin install angular-frontend@gacc-copilot-plugins
+  ```
+* **Carga directa del plugin en desarrollo (`settings.json` de VS Code):**
+  ```json
+  {
+    "chat.plugins.enabled": true,
+    "chat.pluginLocations": {
+      "/Users/<usuario>/gacc-copilot-plugins/plugins/angular-frontend": true
+    }
+  }
+  ```
 
 ---
 
@@ -54,7 +85,7 @@ Solo aparece **1 agente visible** en el selector; los otros **3 subagentes inter
 
 ## 4. Guía de Alto Nivel: Skills (`skills/`) y Modelo de Seguridad
 
-Las skills encapsulan las reglas, esquemas y scripts deterministas en Node.js que cargan los agentes bajo demanda (`user-invocable: false`), resolviendo siempre cada script junto al `SKILL.md` de la skill cargada:
+Las skills encapsulan las reglas, esquemas y scripts deterministas en Node.js que cargan los agentes bajo demanda (`user-invocable: false`), ejecutando los scripts con rutas relativas a cada `SKILL.md`:
 
 * **`angular-migration-prereqs`**: Ejecuta `scripts/check-prereqs.mjs` para inspeccionar `package.json`, `angular.json`, `karma.conf.js` y `*.spec.ts`, clasificando la estrategia en **`UPGRADE_FIRST`** (`BLOCKED` si Angular `< 21`), **`OFFICIAL_SCHEMATIC_SUFFICIENT`** (basta el schematic oficial de Angular) o **`HYBRID_SCHEMATIC_PLUS_AGENT`** (requiere Fase 2 y Fase 3 del plugin).
 * **`karma-vitest-audit`**: Incluye `scripts/generate-diagnosis-report.mjs` (soporta `--project` y `--angular-project` para generar `01-diagnosis-report.{json,md,html}` con KPIs, hallazgos, barras Baja/Media/Alta, buscador de specs y hoja de ruta), además de los JSON Schemas y equivalencias Jasmine → Vitest.

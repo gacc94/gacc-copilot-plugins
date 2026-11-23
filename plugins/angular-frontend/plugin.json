@@ -2,7 +2,7 @@
   "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
   "name": "angular-frontend",
   "description": "Plugin de Angular para GitHub Copilot (VS Code y Copilot CLI): diagnóstico de elegibilidad, generación de plan ejecutable y migración determinista de Jasmine/Karma a Vitest",
-  "version": "2.0.1",
+  "version": "2.0.2",
   "author": {
     "name": "GACC"
   },

@@ -88,7 +88,7 @@ test('Agent Plugins 1.0: plugin.json declares official schema without legacy com
 
   assert.equal(manifest.$schema, 'https://agent-plugins.org/schemas/1.0.0/plugin.schema.json');
   assert.equal(manifest.name, 'angular-frontend');
-  assert.equal(manifest.version, '2.0.1');
+  assert.equal(manifest.version, '2.0.2');
   assert.equal(manifest.agents, undefined, 'Agent Plugins 1.0 must not declare legacy top-level "agents"');
   assert.equal(manifest.skills, undefined, 'Agent Plugins 1.0 must not declare legacy top-level "skills"');
   assert.match(manifest.description, /Copilot CLI/i, 'Description should reflect both VS Code and Copilot CLI scope');

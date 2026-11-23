@@ -14,7 +14,6 @@ Este repositorio centraliza plugins especializados por tecnología bajo `plugins
     ```bash
     node -v
     ```
-* **Repositorio Git con al menos un commit (para uso local):** VS Code valida la revisión Git de un marketplace local antes de instalar sus plugins. Asegúrate de tener el repositorio inicializado y con cambios commiteados (`git init && git add -A && git commit`).
 * **Ejecución 100% local (sin servidores MCP ni dependencias externas):** Tanto los scripts de las skills como la suite de pruebas están escritos en **JavaScript ESM puro (`.mjs`)** utilizando únicamente módulos nativos de Node.js (`node:fs`, `node:path`, `node:url`, `node:test`). No requieren compilación ni `npm install`.
 
 ---
@@ -31,42 +30,50 @@ gacc-copilot-plugins/
 │   ├── verify-artifacts-gate.test.mjs        # Pruebas de seguridad y contrato del gate (node:test)
 │   └── plugin-structure.test.mjs             # Pruebas de integridad Agent Plugins 1.0 y marketplace
 └── plugins/
-    └── angular-frontend/                     # Plugin Angular (Karma → Vitest, v2.0.1)
+    └── angular-frontend/                     # Plugin Angular (Karma → Vitest, v2.0.2)
         ├── plugin.json                       # Manifiesto Agent Plugins 1.0 ($schema)
         ├── README.md
         ├── skills/                           # Skills portables (con sus scripts/ y references/)
         └── com.github.copilot/
-            └── agents/                       # Custom agents específicos de Copilot (incluye hook agent-scoped)
+            └── agents/                       # Custom agents específicos de Copilot (incluye hooks agent-scoped)
 ```
 
 ---
 
-## 3. Cómo Configurar los Plugins (VS Code Copilot Harness y Copilot CLI)
+## 3. Instalación desde Repositorio Remoto (Recomendado)
 
-### Opción A — Desde Copilot Chat con `/plugin` (Recomendado)
+Usa esta opción si quieres incorporar el marketplace e instalar plugins directamente desde GitHub **sin clonar el repositorio** (reemplaza `gacc94/gacc-copilot-plugins` por `<tu-org>/gacc-copilot-plugins` si alojas un fork u organización propia).
 
-Con el harness **Copilot** activo en VS Code Copilot Chat, registra el marketplace e instala el plugin directamente:
+### A. Desde VS Code Copilot Chat (`/plugin`)
+
+Con el harness **Copilot** activo en VS Code Copilot Chat:
 
 ```text
-/plugin marketplace add /Users/gustavocaqui/Development/gacc/projects/plugins/gacc-copilot-plugins
+/plugin marketplace add gacc94/gacc-copilot-plugins
 /plugin marketplace list
 /plugin marketplace browse gacc-copilot-plugins
 /plugin install angular-frontend@gacc-copilot-plugins
 ```
 
-> Si publicas el repositorio en GitHub (por ejemplo `gacc-org/gacc-copilot-plugins`), reemplaza la ruta local por `gacc-org/gacc-copilot-plugins` (compatible también con `copilot plugin marketplace add gacc-org/gacc-copilot-plugins` y `copilot plugin install angular-frontend` gracias a `.github/plugin/marketplace.json`).
+### B. Desde GitHub Copilot CLI
 
-### Opción B — Configuración directa en `~/.copilot/settings.json`
+```bash
+copilot plugin marketplace add gacc94/gacc-copilot-plugins
+copilot plugin list --available
+copilot plugin install angular-frontend@gacc-copilot-plugins
+```
 
-El runtime de **Copilot** lee los marketplaces de usuario desde `~/.copilot/settings.json` (o `.github/copilot/settings.json` a nivel de proyecto):
+### C. Configuración declarativa en `~/.copilot/settings.json` (usuario) o `.github/copilot/settings.json` (proyecto)
+
+Ideal para compartir el marketplace automáticamente con todo un equipo en un repositorio:
 
 ```json
 {
   "extraKnownMarketplaces": {
     "gacc-copilot-plugins": {
       "source": {
-        "source": "directory",
-        "path": "/Users/gustavocaqui/Development/gacc/projects/plugins/gacc-copilot-plugins"
+        "source": "github",
+        "repo": "gacc94/gacc-copilot-plugins"
       }
     }
   },
@@ -76,34 +83,80 @@ El runtime de **Copilot** lee los marketplaces de usuario desde `~/.copilot/sett
 }
 ```
 
-> **Si el repositorio está en GitHub:** cambia `"source"` por `{ "source": "github", "repo": "gacc-org/gacc-copilot-plugins" }`.
->
-> **Nota sobre `settings.json` de VS Code:** si agregas el marketplace en `"chat.plugins.marketplaces"` dentro del `settings.json` clásico de VS Code, el editor mostrará el aviso **Keep your customizations working** con el botón **Migrate...** para trasladarlo automáticamente a `~/.copilot/settings.json`.
+> **Nota sobre `settings.json` de VS Code:** Si agregas el marketplace en `"chat.plugins.marketplaces"` dentro del `settings.json` clásico de VS Code, el editor mostrará el aviso **Keep your customizations working** con el botón **Migrate...** para trasladarlo automáticamente a `~/.copilot/settings.json`.
 
-### Opción C — Carga directa de un plugin en desarrollo local (`settings.json` de VS Code)
+---
 
-Para iterar rápidamente sobre un plugin local sin reinstalarlo desde el catálogo:
+## 4. Instalación desde Clon Local (Desarrollo o Uso Offline)
+
+Usa esta opción si clonaste este repositorio en tu máquina (por ejemplo en `/Users/<usuario>/gacc-copilot-plugins` en macOS/Linux o `C:/Users/<usuario>/gacc-copilot-plugins` en Windows):
+
+```bash
+git clone https://github.com/gacc94/gacc-copilot-plugins.git
+```
+
+> **Requisito para marketplaces locales:** VS Code valida la revisión Git antes de instalar plugins desde un directorio local. Asegúrate de tener tus cambios locales commiteados (`git status` limpio / al menos un commit).
+
+### A. Registrar el marketplace local con `/plugin` (VS Code) o `copilot plugin` (CLI)
+
+En VS Code Copilot Chat:
+
+```text
+/plugin marketplace add /Users/<usuario>/gacc-copilot-plugins
+/plugin marketplace list
+/plugin marketplace browse gacc-copilot-plugins
+/plugin install angular-frontend@gacc-copilot-plugins
+```
+
+O en GitHub Copilot CLI:
+
+```bash
+copilot plugin marketplace add /Users/<usuario>/gacc-copilot-plugins
+copilot plugin install angular-frontend@gacc-copilot-plugins
+```
+
+### B. Configuración declarativa local en `~/.copilot/settings.json`
+
+```json
+{
+  "extraKnownMarketplaces": {
+    "gacc-copilot-plugins": {
+      "source": {
+        "source": "directory",
+        "path": "/Users/<usuario>/gacc-copilot-plugins"
+      }
+    }
+  },
+  "enabledPlugins": {
+    "angular-frontend@gacc-copilot-plugins": true
+  }
+}
+```
+
+### C. Carga directa de un plugin en desarrollo local (`settings.json` de VS Code)
+
+Para iterar rápidamente sobre un plugin sin reinstalarlo desde el catálogo:
 
 ```json
 {
   "chat.plugins.enabled": true,
   "chat.pluginLocations": {
-    "/Users/gustavocaqui/Development/gacc/projects/plugins/gacc-copilot-plugins/plugins/angular-frontend": true
+    "/Users/<usuario>/gacc-copilot-plugins/plugins/angular-frontend": true
   }
 }
 ```
 
 ---
 
-## 4. Plugins Disponibles
+## 5. Plugins Disponibles
 
 | Plugin | Ruta (`source`) | Versión | Descripción | Documentación |
 | :--- | :--- | :---: | :--- | :--- |
-| **`angular-frontend`** | `./plugins/angular-frontend` | `2.0.1` | Diagnóstico visual/estructurado (`.json`, `.md`, `.html`), planificación ejecutable y migración determinista de Karma a Vitest (Angular 21+), en formato Agent Plugins 1.0 para VS Code y Copilot CLI. | [Ver README](./plugins/angular-frontend/README.md) |
+| **`angular-frontend`** | `./plugins/angular-frontend` | `2.0.2` | Diagnóstico visual/estructurado (`.json`, `.md`, `.html`), planificación ejecutable y migración determinista de Karma a Vitest (Angular 21+), en formato Agent Plugins 1.0 para VS Code y Copilot CLI. | [Ver README](./plugins/angular-frontend/README.md) |
 
 ---
 
-## 5. Verificación Local y Diagnóstico
+## 6. Verificación Local y Diagnóstico
 
 Ejecuta la suite completa de pruebas estructurales y de seguridad con el runner nativo de Node.js:
 
@@ -115,7 +168,7 @@ Para inspeccionar el descubrimiento y ejecución del plugin en VS Code (Copilot 
 
 ---
 
-## 6. Cómo Añadir un Nuevo Plugin al Repositorio
+## 7. Cómo Añadir un Nuevo Plugin al Repositorio
 
 1. Crea una nueva carpeta bajo `plugins/<tecnologia>-<rol>/` (por ejemplo, `plugins/nestjs-backend/` o `plugins/java-backend/`).
 2. Añade su manifiesto `plugin.json` siguiendo **Agent Plugins 1.0** (`"$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json"`), su `README.md`, sus skills portables en `skills/` y sus componentes específicos de Copilot en `com.github.copilot/agents/`.
