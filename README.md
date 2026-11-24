@@ -159,27 +159,53 @@ Para iterar rápidamente sobre un plugin sin reinstalarlo desde el catálogo:
 
 ---
 
-## 5. Plugins Disponibles
+## 5. Actualización del Marketplace y Plugins
 
-| Plugin | Ruta (`source`) | Versión | Descripción | Documentación |
-| :--- | :--- | :---: | :--- | :--- |
-| **`angular-frontend`** | `./plugins/angular-frontend` | `2.0.2` | Diagnóstico visual/estructurado (`.json`, `.md`, `.html`), planificación ejecutable y migración determinista de Karma a Vitest (Angular 21+), en formato Agent Plugins 1.0 para VS Code y Copilot CLI. | [Ver README](./plugins/angular-frontend/README.md) |
+Cuando se publique una nueva versión en el repositorio remoto (o tras hacer `git pull` / commit en un clon local), refresca el catálogo del marketplace y actualiza los plugins instalados:
+
+* **En VS Code Copilot Chat (`/plugin`):**
+  ```text
+  /plugin marketplace update gacc-copilot-plugins
+  /plugin update angular-frontend@gacc-copilot-plugins
+  ```
+  *(También puedes refrescar y actualizar desde la interfaz gráfica abriendo `Chat: Open Customizations` → **Plugins**.)*
+* **En GitHub Copilot CLI:**
+  ```bash
+  # Refrescar el catálogo del marketplace (sin argumento actualiza todos los registrados):
+  copilot plugin marketplace update gacc-copilot-plugins
+
+  # Actualizar un plugin específico o todos los instalados:
+  copilot plugin update angular-frontend
+  copilot plugin update --all
+
+  # Verificar la versión instalada:
+  copilot plugin list
+  ```
+* **Desde clon local:** Ejecuta `git pull` (o commitea tus cambios locales en Git) antes de correr los comandos de actualización anteriores.
 
 ---
 
-## 6. Verificación Local y Diagnóstico
+## 6. Plugins Disponibles
 
-Ejecuta la suite completa de pruebas estructurales y de seguridad con el runner nativo de Node.js:
+| Plugin | Ruta (`source`) | Versión | Descripción | Documentación |
+| :--- | :--- | :---: | :--- | :--- |
+| **`angular-frontend`** | `./plugins/angular-frontend` | `2.1.1` | Diagnóstico visual/estructurado (`.json`, `.md`, `.html`), planificación incremental con convivencia y migración determinista de Karma a Vitest (Angular 21+), en formato Agent Plugins 1.0 para VS Code y Copilot CLI. | [Ver README](./plugins/angular-frontend/README.md) |
+
+---
+
+## 7. Verificación Local y Diagnóstico
+
+Ejecuta la suite completa de pruebas estructurales, de reglas y de seguridad con el runner nativo de Node.js:
 
 ```bash
-node --test __tests__/verify-artifacts-gate.test.mjs __tests__/plugin-structure.test.mjs
+node --test __tests__/*.test.mjs
 ```
 
 Para inspeccionar el descubrimiento y ejecución del plugin en VS Code (Copilot harness), usa **Agent Customizations** (`Chat: Open Customizations`) junto con los **registros de depuración del agente y diagnósticos del proveedor** (y valida por separado en **Copilot CLI** si distribuyes el catálogo para ambos entornos).
 
 ---
 
-## 7. Cómo Añadir un Nuevo Plugin al Repositorio
+## 8. Cómo Añadir un Nuevo Plugin al Repositorio
 
 1. Crea una nueva carpeta bajo `plugins/<tecnologia>-<rol>/` (por ejemplo, `plugins/nestjs-backend/` o `plugins/java-backend/`).
 2. Añade su manifiesto `plugin.json` siguiendo **Agent Plugins 1.0** (`"$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json"`), su `README.md`, sus skills portables en `skills/` y sus componentes específicos de Copilot en `com.github.copilot/agents/`.

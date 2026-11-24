@@ -68,6 +68,22 @@ Si clonaste el repositorio en tu máquina (por ejemplo `/Users/<usuario>/gacc-co
   }
   ```
 
+### C. Actualización del Marketplace y del Plugin
+
+* **En VS Code Copilot Chat:**
+  ```text
+  /plugin marketplace update gacc-copilot-plugins
+  /plugin update angular-frontend@gacc-copilot-plugins
+  ```
+  *(También disponible desde `Chat: Open Customizations` → **Plugins**.)*
+* **En GitHub Copilot CLI:**
+  ```bash
+  copilot plugin marketplace update gacc-copilot-plugins
+  copilot plugin update angular-frontend
+  copilot plugin list
+  ```
+* Si usas un **clon local**, realiza primero `git pull` (o commitea tus cambios locales) antes de ejecutar la actualización.
+
 ---
 
 ## 3. Guía de Alto Nivel: Agentes (`com.github.copilot/agents/`)
@@ -119,7 +135,7 @@ Las skills encapsulan las reglas, esquemas y scripts deterministas en Node.js qu
 Desde la raíz del repositorio `gacc-copilot-plugins`, ejecuta:
 
 ```bash
-node --test __tests__/verify-artifacts-gate.test.mjs __tests__/plugin-structure.test.mjs
+node --test __tests__/*.test.mjs
 ```
 
 ### Puntos críticos a confirmar en prueba real (VS Code Copilot Harness y Copilot CLI)

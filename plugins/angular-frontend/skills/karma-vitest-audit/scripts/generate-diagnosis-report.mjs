@@ -14,72 +14,16 @@
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
+import {
+  inspectAllSpecs,
+  inspectKarmaConfigContent,
+  loadMigrationRules,
+} from './lib/migration-engine.mjs';
 
 const SCHEMA_VERSION = '1.3.0';
 const OFFICIAL_SCHEMATIC_CMD = 'ng g @schematics/angular:refactor-jasmine-vitest';
 const ARTIFACTS_SUBDIR = path.join('.migration-artifacts', 'karma-to-vitest');
-
-const JASMINE_API_PATTERNS = [
-  { name: 'spyOn', regex: /\bspyOn\s*\(/g },
-  { name: 'jasmine.SpyObj<T>', regex: /\bjasmine\.SpyObj\s*</g },
-  { name: 'jasmine.Spy', regex: /\bjasmine\.Spy\b(?!Obj)/g },
-  { name: 'jasmine.createSpy', regex: /\bjasmine\.createSpy\s*\(/g },
-  { name: 'jasmine.createSpyObj', regex: /\bjasmine\.createSpyObj\s*\(/g },
-  { name: 'jasmine.any', regex: /\bjasmine\.any\s*\(/g },
-  { name: 'jasmine.anything', regex: /\bjasmine\.anything\s*\(/g },
-  { name: 'jasmine.objectContaining', regex: /\bjasmine\.objectContaining\s*\(/g },
-  { name: 'jasmine.arrayContaining', regex: /\bjasmine\.arrayContaining\s*\(/g },
-  { name: 'jasmine.stringMatching', regex: /\bjasmine\.stringMatching\s*\(/g },
-  { name: 'toBeTrue/toBeFalse', regex: /\.toBe(?:True|False)\s*\(/g },
-  { name: 'spy.calls.reset', regex: /\.calls\.reset\s*\(/g },
-  { name: 'spy.calls.mostRecent', regex: /\.calls\.mostRecent\s*\(/g },
-  { name: 'spy.and.*', regex: /\.and\.(?:returnValue|returnValues|callFake|callThrough|throwError|resolveTo|rejectWith|stub)\s*\(/g },
-];
-
-const ASYNC_TIMER_PATTERNS = [
-  { name: 'fakeAsync', regex: /\bfakeAsync\s*\(/g },
-  { name: 'tick', regex: /\btick\s*\(/g },
-  { name: 'flush', regex: /\bflush(?:Microtasks)?\s*\(/g },
-  { name: 'jasmine.clock', regex: /\bjasmine\.clock\s*\(/g },
-];
-
-const COMPLEX_SPEC_PATTERNS = [
-  { name: 'jasmine.clock', regex: /\bjasmine\.clock\s*\(/ },
-  { name: 'jasmine.isSpy', regex: /\bjasmine\.isSpy\s*\(/ },
-  { name: 'spyOnProperty', regex: /\bspyOnProperty\s*\(/ },
-  { name: 'spyOnAllFunctions', regex: /\bspyOnAllFunctions\s*\(/ },
-  { name: 'jasmine.addMatchers', regex: /\bjasmine\.addMatchers\s*\(/ },
-  { name: 'jasmine.createSpyObj-with-properties', regex: /\bjasmine\.createSpyObj\s*\([^)]*,[^)]*,[^)]*\)/ },
-  { name: 'async-done-callback', regex: /\b(?:it|fit|beforeEach|afterEach)\s*\([^,]+,\s*(?:async\s*)?\(\s*done\b/ },
-];
-
-const MANUAL_MIGRATION_PATTERNS = new Set([
-  'jasmine.isSpy',
-  'jasmine.addMatchers',
-  'jasmine.clock',
-  'async-done-callback',
-]);
-
-const REVIEW_REQUIRED_PATTERNS = new Set([
-  'jasmine.SpyObj<T>',
-  'jasmine.Spy',
-  'spy.calls.reset',
-  'spy.and.*',
-  'spyOnProperty',
-  'spyOnAllFunctions',
-  'jasmine.createSpyObj-with-properties',
-  'fakeAsync',
-  'tick',
-  'flush',
-]);
-
-const CUSTOM_KARMA_PATTERNS = [
-  { name: 'proxies', regex: /\bproxies\s*:/ },
-  { name: 'customLaunchers', regex: /\bcustomLaunchers\s*:/ },
-  { name: 'preprocessors', regex: /\bpreprocessors\s*:/ },
-  { name: 'files', regex: /\bfiles\s*:\s*\[/ },
-  { name: 'webpack', regex: /\bwebpack\s*:/ },
-];
+const MIGRATION_RULES_CATALOG = loadMigrationRules();
 
 function parseArgs(argv) {
   let projectDir = process.cwd();
@@ -116,11 +60,6 @@ function parseSemver(raw) {
   };
 }
 
-function countMatches(content, regex) {
-  const m = content.match(regex);
-  return m ? m.length : 0;
-}
-
 function collectSpecFiles(rootDir, currentDir = rootDir, acc = []) {
   if (!fs.existsSync(currentDir)) return acc;
   const ignored = new Set(['node_modules', '.git', 'dist', '.angular', '.migration-artifacts', 'coverage']);
@@ -139,136 +78,6 @@ function collectSpecFiles(rootDir, currentDir = rootDir, acc = []) {
   return acc;
 }
 
-function inspectAllSpecs(specFiles) {
-  let totalJasmineApiUsages = 0;
-  let totalFakeAsyncTickUsages = 0;
-  const complexSpecFiles = [];
-  const complexPatternsSet = new Set();
-  const specInventory = [];
-  const counts = { low: 0, medium: 0, high: 0 };
-
-  for (const spec of specFiles) {
-    let content = '';
-    try {
-      content = fs.readFileSync(spec.absolutePath, 'utf8');
-    } catch {
-      continue;
-    }
-
-    const detectedPatterns = new Set();
-    let fileJasmineCount = 0;
-    let fileAsyncTimerCount = 0;
-
-    for (const p of JASMINE_API_PATTERNS) {
-      const c = countMatches(content, p.regex);
-      if (c > 0) {
-        fileJasmineCount += c;
-        detectedPatterns.add(p.name);
-      }
-    }
-
-    for (const p of ASYNC_TIMER_PATTERNS) {
-      const c = countMatches(content, p.regex);
-      if (c > 0) {
-        fileAsyncTimerCount += c;
-        detectedPatterns.add(p.name);
-      }
-    }
-
-    const fileComplexPatterns = [];
-    for (const p of COMPLEX_SPEC_PATTERNS) {
-      if (p.regex.test(content)) {
-        fileComplexPatterns.push(p.name);
-        complexPatternsSet.add(p.name);
-        detectedPatterns.add(p.name);
-      }
-    }
-
-    totalJasmineApiUsages += fileJasmineCount;
-    totalFakeAsyncTickUsages += fileAsyncTimerCount;
-
-    let complexity = 'low';
-    const hasSpyObjType = detectedPatterns.has('jasmine.SpyObj<T>') || detectedPatterns.has('jasmine.Spy');
-    if (fileComplexPatterns.length > 0 || fileJasmineCount >= 12) {
-      complexity = 'high';
-    } else if (fileAsyncTimerCount > 0 || fileJasmineCount >= 4 || hasSpyObjType) {
-      complexity = 'medium';
-    }
-
-    let expectedOutcome = 'automatically_migrated';
-    if (fileComplexPatterns.some((p) => MANUAL_MIGRATION_PATTERNS.has(p))) {
-      expectedOutcome = 'manual_migration';
-    } else if (
-      complexity !== 'low' ||
-      [...detectedPatterns].some((p) => REVIEW_REQUIRED_PATTERNS.has(p))
-    ) {
-      expectedOutcome = 'requires_review';
-    }
-
-    // Deterministic 1-10 numeric complexity score aligned with low (1-3), medium (4-6), high (7-10)
-    let rawScore =
-      1 +
-      Math.min(4, Math.ceil(fileJasmineCount / 3)) +
-      (fileAsyncTimerCount >= 3 ? 2 : fileAsyncTimerCount > 0 ? 1 : 0) +
-      Math.min(3, fileComplexPatterns.length * 2);
-    let complexityScore;
-    if (complexity === 'high') {
-      complexityScore = Math.max(7, Math.min(10, rawScore + 2));
-    } else if (complexity === 'medium') {
-      complexityScore = Math.max(4, Math.min(6, rawScore));
-    } else {
-      complexityScore = Math.max(1, Math.min(3, rawScore));
-    }
-
-    counts[complexity] += 1;
-
-    if (fileComplexPatterns.length > 0) {
-      complexSpecFiles.push({
-        file: spec.relativePath,
-        patterns: fileComplexPatterns,
-      });
-    }
-
-    specInventory.push({
-      file: spec.relativePath,
-      jasminePatterns: [...detectedPatterns],
-      jasmineApiCount: fileJasmineCount,
-      fakeAsyncTickCount: fileAsyncTimerCount,
-      complexity,
-      complexityScore,
-      expectedOutcome,
-    });
-  }
-
-  // Sort inventory: high -> medium -> low, higher score first, then alphabetical
-  const rank = { high: 0, medium: 1, low: 2 };
-  specInventory.sort(
-    (a, b) =>
-      rank[a.complexity] - rank[b.complexity] ||
-      b.complexityScore - a.complexityScore ||
-      a.file.localeCompare(b.file)
-  );
-
-  const total = specInventory.length;
-  const pct = (n) => (total === 0 ? 0 : Math.round((n / total) * 100));
-  const lowPct = pct(counts.low);
-  const highPct = pct(counts.high);
-  const mediumPct = total === 0 ? 0 : Math.max(0, 100 - lowPct - highPct);
-
-  return {
-    specInventory,
-    totalJasmineApiUsages,
-    totalFakeAsyncTickUsages,
-    complexSpecPatterns: [...complexPatternsSet],
-    complexSpecFiles,
-    complexityBreakdown: {
-      low: { count: counts.low, percentage: lowPct },
-      medium: { count: counts.medium, percentage: mediumPct },
-      high: { count: counts.high, percentage: highPct },
-    },
-  };
-}
-
 function inspectKarmaConfig(karmaConfPath) {
   if (!fs.existsSync(karmaConfPath)) {
     return { exists: false, isCustom: false, customFeatures: [] };
@@ -279,20 +88,11 @@ function inspectKarmaConfig(karmaConfPath) {
   } catch {
     return { exists: true, isCustom: true, customFeatures: ['unreadable-karma-conf'] };
   }
-  const features = [];
-  for (const p of CUSTOM_KARMA_PATTERNS) {
-    if (p.regex.test(content)) {
-      features.push(p.name);
-    }
-  }
-  const nonDefaultPlugins = content.match(/require\(['"]karma-(?!jasmine|chrome-launcher|coverage|jasmine-html-reporter)[^'"]+['"]\)/g);
-  if (nonDefaultPlugins && nonDefaultPlugins.length > 0) {
-    features.push('non-default-karma-plugins');
-  }
+  const parsed = inspectKarmaConfigContent(content, MIGRATION_RULES_CATALOG);
   return {
     exists: true,
-    isCustom: features.length > 0,
-    customFeatures: features,
+    isCustom: parsed.isCustom,
+    customFeatures: parsed.customFeatures,
   };
 }
 
@@ -1337,7 +1137,7 @@ function main() {
       ? path.resolve(projectDir, selectedProjectRoot)
       : projectDir;
   const specFiles = collectSpecFiles(projectDir, specSearchRoot);
-  const specAnalysis = inspectAllSpecs(specFiles);
+  const specAnalysis = inspectAllSpecs(specFiles, MIGRATION_RULES_CATALOG);
 
   const karmaConfPath = selectedKarmaConfig
     ? path.resolve(projectDir, selectedKarmaConfig)

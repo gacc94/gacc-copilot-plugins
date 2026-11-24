@@ -95,14 +95,43 @@ const service: Mocked<UserService> = {
 
 | Patrón en Jasmine | Equivalente en Vitest | Categoría / Resultado |
 | :--- | :--- | :--- |
-| `jasmine.clock().install()` | `vi.useFakeTimers()` | `Semantic Transformation` (`manual_migration` / `requires_review`) |
+| `jasmine.clock().install()` | `vi.useFakeTimers()` | `Semantic Transformation` (`requires_review`) |
 | `jasmine.clock().tick(500)` | `vi.advanceTimersByTime(500)` | `Semantic Transformation` (`requires_review`) |
 | `jasmine.clock().uninstall()` | `vi.useRealTimers()` | `Semantic Transformation` (`requires_review`) |
 | `it('async', (done) => { ... done(); })` | `it('async', async () => { ... })` o `new Promise<void>((resolve) => ...)` | `Semantic Transformation` (`manual_migration`) |
 
 ---
 
-## 6. Configuración Angular (`@angular/build:unit-test`) y Advertencias Oficiales
+## 6. Reglas de Detección de Patrones No Soportados o de Alto Riesgo
+
+Antes de ejecutar cualquier transformación automática, el motor de diagnóstico clasifica los siguientes patrones de alto riesgo o sin equivalencia 1:1 para impedir migraciones ciegas:
+
+| Patrón | Tratamiento (`migrationOutcome`) | Criterio de seguridad / Acción requerida |
+| :--- | :---: | :--- |
+| `jasmine.addMatchers()` | `manual_migration` | Vitest usa `expect.extend(...)` con contrato distinto (`pass`, `message`, `this.utils`); no es traducible por reemplazo mecánico. |
+| `jasmine.clock()` con lógica compleja | `requires_review` | `vi.useFakeTimers()` difiere en manejo de microtasks, reloj del sistema e interacción con Zone.js; exige verificación funcional. |
+| Custom Jasmine matchers (`declare namespace jasmine`, `CustomMatcher`) | `manual_migration` | Extienden tipos globales de Jasmine (`jasmine.Matchers<T>`); requieren reescritura con `expect.extend` y *module augmentation* de Vitest. |
+| Plugins personalizados de Karma (`karma.conf.js`) | `manual_migration` | Proxies, preprocessors, `customLaunchers` y plugins no estándar carecen de mapeo directo en `@angular/build:unit-test`. |
+| `fakeAsync()` + `tick()` | `requires_review` | Depende de Zone.js; validar ejecución bajo Vitest o evaluar transición progresiva a `vi.useFakeTimers()` / `async`/`await`. |
+| `jasmine.SpyObj<T>` con métodos y propiedades | `requires_review` | Migrar a `Mocked<T>` construyendo métodos (`vi.fn()`) y propiedades explícitas; validar estrictamente con el compilador TypeScript. |
+| `jasmine.isSpy()` | `manual_migration` | Sin equivalente directo garantizado; inspeccionar el uso real antes de evaluar `vi.isMockFunction()`. |
+
+---
+
+## 7. Separación Arquitectónica del Migrador (4 Capas)
+
+Este documento funciona como **especificación funcional** de las reglas; la implementación desacopla las responsabilidades en cuatro artefactos independientes para facilitar la extensión a futuras versiones de Angular u otros frameworks de testing:
+
+| Capa | Artefactos en el plugin | Responsabilidad |
+| :--- | :--- | :--- |
+| **`migration-rules`** | [migration-rules.json](./migration-rules.json), [migration-rules.schema.json](./migration-rules.schema.json) y esta especificación | Definición declarativa y verificable de cada regla (ID, categoría, tratamiento, regex de detección, ejemplo de entrada, salida esperada y criterios de seguridad). |
+| **`migration-engine`** | [migration-engine.mjs](../scripts/lib/migration-engine.mjs) | Consume `migration-rules.json` como fuente única de verdad para detección de patrones, puntuación de complejidad (`1–10`) y clasificación de riesgo/resultado. |
+| **`migration-validator`** | [verify-artifacts-gate.mjs](../../karma-vitest-migrate/scripts/verify-artifacts-gate.mjs), [approve-artifact.mjs](../../karma-vitest-migrate/scripts/approve-artifact.mjs) y comandos `test-vitest`/`ng test`/`ng build` | Compuertas deterministas, hooks `preToolUse`, validación de `diagnosisHash`/`targetFiles` y verificación de compilación/pruebas. |
+| **`migration-reporter`** | [generate-diagnosis-report.mjs](../scripts/generate-diagnosis-report.mjs) y [generate-migration-plan.mjs](../scripts/generate-migration-plan.mjs) | Generación de evidencias auditables (`01-diagnosis-report.{json,md,html}`, `02-migration-plan.{json,md}` y `plans/phase-XX-*.{json,md}`). |
+
+---
+
+## 8. Configuración Angular (`@angular/build:unit-test`) y Advertencias Oficiales
 
 ### Advertencias oficiales de Angular
 * **Sistema de construcción `application` requerido:** La migración oficial desde Karma a Vitest requiere utilizar el sistema de construcción **`application`** (`@angular/build:application` / `@angular-devkit/build-angular:application`). Si el proyecto aún usa el builder clásico `browser`, debe migrarse primero al sistema `application`.

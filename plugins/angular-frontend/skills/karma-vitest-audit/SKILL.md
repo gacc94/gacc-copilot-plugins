@@ -57,7 +57,8 @@ node scripts/generate-migration-plan.mjs --project "." --angular-project "<nombr
 | **Fase 1** | `01-diagnosis-report.json` | [diagnosis-report.schema.json](./references/diagnosis-report.schema.json) |
 | **Fase 2 (Maestro)** | `02-migration-plan.json` | [migration-plan.schema.json](./references/migration-plan.schema.json) |
 | **Fase 2 (Por fase)** | `plans/phase-XX-*.json` | [migration-phase.schema.json](./references/migration-phase.schema.json) |
-| **Referencia** | Equivalencias Jasmine → Vitest | [jasmine-to-vitest-patterns.md](./references/jasmine-to-vitest-patterns.md) |
+| **Reglas (`migration-rules`)** | Catálogo declarativo de reglas | [migration-rules.json](./references/migration-rules.json) ([esquema](./references/migration-rules.schema.json)) |
+| **Especificación funcional** | Equivalencias y riesgos Jasmine → Vitest | [jasmine-to-vitest-patterns.md](./references/jasmine-to-vitest-patterns.md) |
 
 ## 4. Reglas de Aprobación Humana (Checkpoints)
 * Ningún artefacto nace aprobado (`approval.status` siempre inicia en `"PENDING"`).

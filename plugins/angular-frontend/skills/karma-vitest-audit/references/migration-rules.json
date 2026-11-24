@@ -1,0 +1,397 @@
+{
+  "schemaVersion": "1.0.0",
+  "sourceFramework": "jasmine-karma",
+  "targetFramework": "vitest-angular-unit-test",
+  "rules": [
+    {
+      "id": "RULE-AST-001",
+      "name": "spyOn",
+      "scope": "spec",
+      "category": "ast_transformation",
+      "treatment": "automatically_migrated",
+      "signalBucket": "jasmine_api",
+      "minimumComplexity": "low",
+      "detectionPattern": "(?<!\\.)\\bspyOn\\s*\\(",
+      "safetyCriteria": "vi.spyOn conserva la implementacion original por defecto; validar que no se asuma stub silencioso sin mockImplementation.",
+      "examples": {
+        "input": "spyOn(service, 'getUser').and.callThrough();",
+        "expectedOutput": "vi.spyOn(service, 'getUser');"
+      }
+    },
+    {
+      "id": "RULE-AST-002",
+      "name": "jasmine.createSpy",
+      "scope": "spec",
+      "category": "ast_transformation",
+      "treatment": "automatically_migrated",
+      "signalBucket": "jasmine_api",
+      "minimumComplexity": "low",
+      "detectionPattern": "\\bjasmine\\.createSpy(?:\\s*<[^>]+>)?\\s*\\(",
+      "safetyCriteria": "Equivalencia directa con vi.fn(); validar si se encadenan retornos o implementaciones personalizadas.",
+      "examples": {
+        "input": "const callback = jasmine.createSpy('callback');",
+        "expectedOutput": "const callback = vi.fn();"
+      }
+    },
+    {
+      "id": "RULE-AST-003",
+      "name": "jasmine.createSpyObj",
+      "scope": "spec",
+      "category": "type_transformation",
+      "treatment": "requires_review",
+      "signalBucket": "jasmine_api",
+      "minimumComplexity": "low",
+      "detectionPattern": "\\bjasmine\\.createSpyObj(?:\\s*<[^>]+>)?\\s*\\(",
+      "safetyCriteria": "Construir objeto literal con metodos vi.fn() y verificar compatibilidad de tipos contra el servicio original.",
+      "examples": {
+        "input": "const svc = jasmine.createSpyObj('UserService', ['getUser']);",
+        "expectedOutput": "const svc = { getUser: vi.fn() };"
+      }
+    },
+    {
+      "id": "RULE-AST-004",
+      "name": "jasmine.any",
+      "scope": "spec",
+      "category": "ast_transformation",
+      "treatment": "automatically_migrated",
+      "signalBucket": "jasmine_api",
+      "minimumComplexity": "low",
+      "detectionPattern": "\\bjasmine\\.any\\s*\\(",
+      "safetyCriteria": "Equivalencia directa con expect.any(Constructor).",
+      "examples": {
+        "input": "expect(spy).toHaveBeenCalledWith(jasmine.any(String));",
+        "expectedOutput": "expect(spy).toHaveBeenCalledWith(expect.any(String));"
+      }
+    },
+    {
+      "id": "RULE-AST-005",
+      "name": "jasmine.anything",
+      "scope": "spec",
+      "category": "ast_transformation",
+      "treatment": "automatically_migrated",
+      "signalBucket": "jasmine_api",
+      "minimumComplexity": "low",
+      "detectionPattern": "\\bjasmine\\.anything\\s*\\(",
+      "safetyCriteria": "Equivalencia directa con expect.anything().",
+      "examples": {
+        "input": "expect(spy).toHaveBeenCalledWith(jasmine.anything());",
+        "expectedOutput": "expect(spy).toHaveBeenCalledWith(expect.anything());"
+      }
+    },
+    {
+      "id": "RULE-AST-006",
+      "name": "jasmine.objectContaining",
+      "scope": "spec",
+      "category": "ast_transformation",
+      "treatment": "automatically_migrated",
+      "signalBucket": "jasmine_api",
+      "minimumComplexity": "low",
+      "detectionPattern": "\\bjasmine\\.objectContaining\\s*\\(",
+      "safetyCriteria": "Equivalencia directa con expect.objectContaining(...).",
+      "examples": {
+        "input": "expect(payload).toEqual(jasmine.objectContaining({ id: 1 }));",
+        "expectedOutput": "expect(payload).toEqual(expect.objectContaining({ id: 1 }));"
+      }
+    },
+    {
+      "id": "RULE-AST-007",
+      "name": "jasmine.arrayContaining",
+      "scope": "spec",
+      "category": "ast_transformation",
+      "treatment": "automatically_migrated",
+      "signalBucket": "jasmine_api",
+      "minimumComplexity": "low",
+      "detectionPattern": "\\bjasmine\\.arrayContaining\\s*\\(",
+      "safetyCriteria": "Equivalencia directa con expect.arrayContaining(...).",
+      "examples": {
+        "input": "expect(items).toEqual(jasmine.arrayContaining(['a']));",
+        "expectedOutput": "expect(items).toEqual(expect.arrayContaining(['a']));"
+      }
+    },
+    {
+      "id": "RULE-AST-008",
+      "name": "jasmine.stringMatching",
+      "scope": "spec",
+      "category": "ast_transformation",
+      "treatment": "automatically_migrated",
+      "signalBucket": "jasmine_api",
+      "minimumComplexity": "low",
+      "detectionPattern": "\\bjasmine\\.stringMatching\\s*\\(",
+      "safetyCriteria": "Equivalencia directa con expect.stringMatching(...).",
+      "examples": {
+        "input": "expect(msg).toEqual(jasmine.stringMatching(/ready/));",
+        "expectedOutput": "expect(msg).toEqual(expect.stringMatching(/ready/));"
+      }
+    },
+    {
+      "id": "RULE-AST-009",
+      "name": "toBeTrue/toBeFalse",
+      "scope": "spec",
+      "category": "ast_transformation",
+      "treatment": "automatically_migrated",
+      "signalBucket": "jasmine_api",
+      "minimumComplexity": "low",
+      "detectionPattern": "\\.toBe(?:True|False)\\s*\\(",
+      "safetyCriteria": "Reemplazar estrictamente por toBe(true) o toBe(false), nunca toBeTruthy/toBeFalsy.",
+      "examples": {
+        "input": "expect(flag).toBeTrue();",
+        "expectedOutput": "expect(flag).toBe(true);"
+      }
+    },
+    {
+      "id": "RULE-AST-010",
+      "name": "spy.calls.mostRecent",
+      "scope": "spec",
+      "category": "ast_transformation",
+      "treatment": "automatically_migrated",
+      "signalBucket": "jasmine_api",
+      "minimumComplexity": "low",
+      "detectionPattern": "\\.calls\\.mostRecent\\s*\\(",
+      "safetyCriteria": "spy.calls.mostRecent().args migra a spy.mock.lastCall; validar caso undefined si no hubo llamadas.",
+      "examples": {
+        "input": "const args = spy.calls.mostRecent().args;",
+        "expectedOutput": "const args = spy.mock.lastCall;"
+      }
+    },
+    {
+      "id": "RULE-TYPE-001",
+      "name": "jasmine.Spy",
+      "scope": "spec",
+      "category": "type_transformation",
+      "treatment": "requires_review",
+      "signalBucket": "jasmine_api",
+      "minimumComplexity": "medium",
+      "detectionPattern": "\\bjasmine\\.Spy\\b(?!Obj)",
+      "safetyCriteria": "Migrar a Mock importado de 'vitest' verificando parametros genericos de la firma original.",
+      "examples": {
+        "input": "let fnSpy: jasmine.Spy;",
+        "expectedOutput": "import { type Mock } from 'vitest';\nlet fnSpy: Mock;"
+      }
+    },
+    {
+      "id": "RULE-TYPE-002",
+      "name": "jasmine.SpyObj<T>",
+      "scope": "spec",
+      "category": "type_transformation",
+      "treatment": "requires_review",
+      "signalBucket": "jasmine_api",
+      "minimumComplexity": "medium",
+      "detectionPattern": "\\bjasmine\\.SpyObj\\s*<",
+      "safetyCriteria": "Migrar a Mocked<T> (importado de 'vitest'); no asumir MockedObject<T> como sustitucion textual universal y validar tipos con TypeScript.",
+      "examples": {
+        "input": "const service: jasmine.SpyObj<UserService> = jasmine.createSpyObj('UserService', ['getUser']);",
+        "expectedOutput": "import { vi, type Mocked } from 'vitest';\nconst service: Mocked<UserService> = { getUser: vi.fn() };"
+      }
+    },
+    {
+      "id": "RULE-SEM-001",
+      "name": "spy.calls.reset",
+      "scope": "spec",
+      "category": "semantic_transformation",
+      "treatment": "requires_review",
+      "signalBucket": "jasmine_api",
+      "minimumComplexity": "low",
+      "detectionPattern": "\\.calls\\.reset\\s*\\(",
+      "safetyCriteria": "Debe migrar EXCLUSIVAMENTE a spy.mockClear() (solo limpia historial). Nunca sustituir por mockReset() ni mockRestore() porque borran la implementacion configurada.",
+      "examples": {
+        "input": "getUserSpy.calls.reset();",
+        "expectedOutput": "getUserSpy.mockClear();"
+      }
+    },
+    {
+      "id": "RULE-SEM-002",
+      "name": "spy.and.*",
+      "scope": "spec",
+      "category": "semantic_transformation",
+      "treatment": "requires_review",
+      "signalBucket": "jasmine_api",
+      "minimumComplexity": "low",
+      "detectionPattern": "\\.and\\.(?:returnValue|returnValues|callFake|callThrough|throwError|resolveTo|rejectWith|stub)\\s*\\(",
+      "safetyCriteria": "Verificar diferencias semanticas en returnValues (mockReturnValueOnce encadenado), callFake (mockImplementation) y callThrough (comportamiento por defecto en vi.spyOn).",
+      "examples": {
+        "input": "spyOn(svc, 'get').and.returnValues(1, 2);",
+        "expectedOutput": "vi.spyOn(svc, 'get').mockReturnValueOnce(1).mockReturnValueOnce(2);"
+      }
+    },
+    {
+      "id": "RULE-SEM-003",
+      "name": "fakeAsync",
+      "scope": "spec",
+      "category": "semantic_transformation",
+      "treatment": "requires_review",
+      "signalBucket": "async_timer",
+      "minimumComplexity": "medium",
+      "detectionPattern": "(?<!\\.)\\bfakeAsync\\s*\\(",
+      "safetyCriteria": "fakeAsync depende de Zone.js; validar su ejecucion en Vitest o migrar progresivamente a vi.useFakeTimers() / async-await.",
+      "examples": {
+        "input": "it('waits', fakeAsync(() => { tick(200); }));",
+        "expectedOutput": "it('waits', async () => { vi.useFakeTimers(); await vi.advanceTimersByTimeAsync(200); vi.useRealTimers(); });"
+      }
+    },
+    {
+      "id": "RULE-SEM-004",
+      "name": "tick",
+      "scope": "spec",
+      "category": "semantic_transformation",
+      "treatment": "requires_review",
+      "signalBucket": "async_timer",
+      "minimumComplexity": "medium",
+      "detectionPattern": "(?<!\\.)\\btick\\s*\\(",
+      "safetyCriteria": "Verificar que el avance de temporizadores y microtasks coincida con la semantica de Zone.js al migrar a Vitest.",
+      "examples": {
+        "input": "tick(500);",
+        "expectedOutput": "vi.advanceTimersByTime(500);"
+      }
+    },
+    {
+      "id": "RULE-SEM-005",
+      "name": "flush",
+      "scope": "spec",
+      "category": "semantic_transformation",
+      "treatment": "requires_review",
+      "signalBucket": "async_timer",
+      "minimumComplexity": "medium",
+      "detectionPattern": "(?<!\\.)\\bflush(?:Microtasks)?\\s*\\(",
+      "safetyCriteria": "Revisar drenaje de colas de timers/promesas con vi.runAllTimersAsync() o await Promise.resolve().",
+      "examples": {
+        "input": "flushMicrotasks();",
+        "expectedOutput": "await Promise.resolve();"
+      }
+    },
+    {
+      "id": "RULE-RISK-001",
+      "name": "jasmine.clock",
+      "scope": "spec",
+      "category": "semantic_transformation",
+      "treatment": "requires_review",
+      "signalBucket": "complex_spec",
+      "minimumComplexity": "high",
+      "detectionPattern": "\\bjasmine\\.clock\\s*\\(",
+      "safetyCriteria": "jasmine.clock() con logica compleja difiere de vi.useFakeTimers() en microtasks y Date; verificar en ejecucion y restaurar siempre con vi.useRealTimers().",
+      "examples": {
+        "input": "jasmine.clock().install(); jasmine.clock().tick(500); jasmine.clock().uninstall();",
+        "expectedOutput": "vi.useFakeTimers(); vi.advanceTimersByTime(500); vi.useRealTimers();"
+      }
+    },
+    {
+      "id": "RULE-RISK-002",
+      "name": "jasmine.addMatchers",
+      "scope": "spec",
+      "category": "semantic_transformation",
+      "treatment": "manual_migration",
+      "signalBucket": "complex_spec",
+      "minimumComplexity": "high",
+      "detectionPattern": "\\bjasmine\\.addMatchers\\s*\\(",
+      "safetyCriteria": "Sin equivalencia mecanica directa; reescribir manualmente con expect.extend(...) respetando el contrato de Vitest.",
+      "examples": {
+        "input": "jasmine.addMatchers({ toBeEven: () => ({ compare: (a) => ({ pass: a % 2 === 0 }) }) });",
+        "expectedOutput": "expect.extend({ toBeEven(received) { return { pass: received % 2 === 0, message: () => 'expected even' }; } });"
+      }
+    },
+    {
+      "id": "RULE-RISK-003",
+      "name": "custom-jasmine-matchers",
+      "scope": "spec",
+      "category": "type_transformation",
+      "treatment": "manual_migration",
+      "signalBucket": "complex_spec",
+      "minimumComplexity": "high",
+      "detectionPattern": "(?:declare\\s+namespace\\s+jasmine\\b|\\bjasmine\\.CustomMatcher\\b|\\binterface\\s+CustomMatchers\\b)",
+      "safetyCriteria": "Los custom matchers tipados en namespace jasmine requieren migracion manual a expect.extend y module augmentation de 'vitest'.",
+      "examples": {
+        "input": "declare namespace jasmine { interface Matchers<T> { toBeEven(): boolean; } }",
+        "expectedOutput": "declare module 'vitest' { interface Assertion<T = any> { toBeEven(): void; } }"
+      }
+    },
+    {
+      "id": "RULE-RISK-004",
+      "name": "jasmine.isSpy",
+      "scope": "spec",
+      "category": "semantic_transformation",
+      "treatment": "manual_migration",
+      "signalBucket": "complex_spec",
+      "minimumComplexity": "high",
+      "detectionPattern": "\\bjasmine\\.isSpy\\s*\\(",
+      "safetyCriteria": "Sin equivalente directo garantizado; revisar el contrato esperado antes de adoptar vi.isMockFunction(...) o refactorizar la asercion.",
+      "examples": {
+        "input": "expect(jasmine.isSpy(fn)).toBe(true);",
+        "expectedOutput": "expect(vi.isMockFunction(fn)).toBe(true);"
+      }
+    },
+    {
+      "id": "RULE-RISK-005",
+      "name": "spyOnProperty",
+      "scope": "spec",
+      "category": "semantic_transformation",
+      "treatment": "requires_review",
+      "signalBucket": "complex_spec",
+      "minimumComplexity": "high",
+      "detectionPattern": "(?<!\\.)\\bspyOnProperty\\s*\\(",
+      "safetyCriteria": "Migrar a vi.spyOn(obj, 'prop', 'get'|'set') verificando descriptores configurables y restauracion en afterEach.",
+      "examples": {
+        "input": "spyOnProperty(cfg, 'ready', 'get').and.returnValue(true);",
+        "expectedOutput": "vi.spyOn(cfg, 'ready', 'get').mockReturnValue(true);"
+      }
+    },
+    {
+      "id": "RULE-RISK-006",
+      "name": "spyOnAllFunctions",
+      "scope": "spec",
+      "category": "semantic_transformation",
+      "treatment": "requires_review",
+      "signalBucket": "complex_spec",
+      "minimumComplexity": "high",
+      "detectionPattern": "(?<!\\.)\\bspyOnAllFunctions\\s*\\(",
+      "safetyCriteria": "Vitest no tiene helper 1:1; espia explicitamente cada metodo usado o usa un helper de mock controlado.",
+      "examples": {
+        "input": "spyOnAllFunctions(service);",
+        "expectedOutput": "vi.spyOn(service, 'load'); vi.spyOn(service, 'save');"
+      }
+    },
+    {
+      "id": "RULE-RISK-007",
+      "name": "jasmine.createSpyObj-with-properties",
+      "scope": "spec",
+      "category": "type_transformation",
+      "treatment": "requires_review",
+      "signalBucket": "complex_spec",
+      "minimumComplexity": "high",
+      "detectionPattern": "\\bjasmine\\.createSpyObj(?:\\s*<[^>]+>)?\\s*\\([^)]*,[^)]*,[^)]*\\)",
+      "safetyCriteria": "jasmine.SpyObj<T> con metodos y propiedades requiere construir metodos vi.fn() y propiedades/getters explicitos validados con TypeScript.",
+      "examples": {
+        "input": "const svc = jasmine.createSpyObj<Store>('Store', ['load'], { state$: of(1) });",
+        "expectedOutput": "const svc: Mocked<Store> = { load: vi.fn(), state$: of(1) } as unknown as Mocked<Store>;"
+      }
+    },
+    {
+      "id": "RULE-RISK-008",
+      "name": "async-done-callback",
+      "scope": "spec",
+      "category": "semantic_transformation",
+      "treatment": "manual_migration",
+      "signalBucket": "complex_spec",
+      "minimumComplexity": "high",
+      "detectionPattern": "\\b(?:it|fit|beforeEach|afterEach)\\s*\\([^,]+,\\s*(?:async\\s*)?\\(\\s*done\\b",
+      "safetyCriteria": "Vitest depreca callbacks done; reescribir a async/await o retornar una Promise explicita verificando errores y timeouts.",
+      "examples": {
+        "input": "it('loads', (done) => { obs$.subscribe(() => done()); });",
+        "expectedOutput": "it('loads', async () => { await firstValueFrom(obs$); });"
+      }
+    },
+    {
+      "id": "RULE-CFG-001",
+      "name": "custom-karma-plugins",
+      "scope": "karma-config",
+      "category": "configuration_migration",
+      "treatment": "manual_migration",
+      "signalBucket": "high_risk_config",
+      "minimumComplexity": "high",
+      "detectionPattern": "require\\(['\"]karma-(?!jasmine|chrome-launcher|coverage|jasmine-html-reporter)[^'\"]+['\"]\\)",
+      "safetyCriteria": "Plugins personalizados de Karma no tienen migracion automatica en @angular/build:unit-test; evaluar reemplazo nativo o plugin de Vitest.",
+      "examples": {
+        "input": "plugins: [require('karma-junit-reporter')]",
+        "expectedOutput": "// Configurar reporters en vitest / @angular/build:unit-test"
+      }
+    }
+  ]
+}
