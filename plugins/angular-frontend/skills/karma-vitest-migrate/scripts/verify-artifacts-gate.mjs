@@ -1,15 +1,17 @@
 #!/usr/bin/env node
 /**
- * Gate validator for the 3-phase Angular Karma-to-Vitest migration workflow.
+ * Gate validator & agent-scoped preToolUse hook for the Angular Karma-to-Vitest migration workflow.
  *
  * Modes:
  * 1. CLI mode:
- *    node verify-artifacts-gate.mjs --project <dir> --phase <plan|migrate>
+ *    node verify-artifacts-gate.mjs --project <dir> --phase <plan|migrate> [--plan-phase <phaseId>]
  *    Exits with 0 if the required artifacts exist and are APPROVED, or 1 otherwise.
  *
- * 2. Copilot harness preToolUse Hook mode (agent-scoped):
+ * 2. Copilot harness preToolUse Hook mode (agent-scoped across all 4 agents):
+ *    - Orchestrator:       node verify-artifacts-gate.mjs --hook --phase orchestrate [--project <dir>]
+ *    - Analyst (Phase 1):  node verify-artifacts-gate.mjs --hook --phase audit [--project <dir>]
  *    - Planner (Phase 2):  node verify-artifacts-gate.mjs --hook --phase plan [--project <dir>]
- *    - Migrator (Phase 3): node verify-artifacts-gate.mjs --hook --phase migrate [--project <dir>]
+ *    - Migrator (Phase 3): node verify-artifacts-gate.mjs --hook --phase migrate [--project <dir>] [--plan-phase <phaseId>]
  *    Reads the Copilot harness preToolUse camelCase event JSON from stdin:
  *      { sessionId, timestamp, cwd, toolName, toolArgs }
  *    Outputs flat Copilot harness JSON to stdout:
@@ -21,32 +23,25 @@
  *   - DENY (unconditional, never bypassed by workflow approval):
  *       * Invalid/empty stdin, missing toolName, malformed toolArgs, or invalid --phase.
  *       * Unknown runtime toolName (strictly separated from agent frontmatter aliases).
- *       * Subagent delegation via "task" (neither Planner nor Migrator may spawn subagents).
+ *       * Subagent delegation via "task" inside Analyst, Planner, and Migrator (allowed ONLY in Orchestrator).
  *       * Unverifiable/malformed file targets, non-file URIs, UNC paths, symlink escapes,
  *         or mutations targeting paths outside the workspace root.
- *       * Phase 1 diagnosis artifacts (01-diagnosis-report.*) are immutable in both
- *         Planner and Migrator hooks (prevents self-approval).
- *       * In --phase plan (Planner): ANY file write outside 02-migration-plan.{json,md}
- *         and ANY shell command outside the 3 trusted plugin scripts.
+ *       * Phase 1 diagnosis artifacts (01-diagnosis-report.*) are immutable in Planner and Migrator hooks.
+ *       * approve-artifact.mjs is strictly forbidden inside Analyst, Planner, and Migrator (no self-approval).
+ *       * In --phase orchestrate: ALL file edits and ALL shell commands except approve-artifact.mjs.
+ *       * In --phase audit (Analyst): ALL file edits and ALL shell commands except generate-diagnosis-report.mjs / check-prereqs.mjs.
+ *       * In --phase plan (Planner): ANY file write outside 02-migration-plan.{json,md} and plans/phase-XX-*.{json,md},
+ *         and ANY shell command outside authorized read/plan plugin scripts.
  *   - NO_DECISION ({}):
  *       * Officially documented read-only/non-mutating runtime tools (view, glob, grep,
- *         ask_user, web_fetch, update_todo).
- *       * Exact invocations of the 3 trusted plugin scripts (verified via canonical
- *         realpath, closed grammar, strict per-script contract, and --project constrained
- *         within the current workspace).
+ *         ask_user, web_fetch, update_todo), plus task and vscode/askQuestions in Orchestrator only.
+ *       * Exact invocations of phase-authorized plugin scripts (verified via canonical realpath,
+ *         closed grammar, strict per-script contract, and --project constrained inside workspace).
  *   - REQUIRE_GATE:
- *       * In --phase plan (Planner): writing 02-migration-plan.{json,md} inside
- *         .migration-artifacts/karma-to-vitest requires diagnosis READY + APPROVED.
- *       * In --phase migrate (Migrator): workspace file mutations (including updating
- *         02-migration-plan.json task status, never before approval) and shell commands
- *         require diagnosis READY + APPROVED AND plan APPROVED with tasks.
- *
- * Known runtime limitations (documented intentionally):
- *   - Command hook timeouts in Copilot are fail-open (errors/non-zero exit are fail-closed).
- *   - Symlink resolution at preToolUse time cannot eliminate TOCTOU race conditions; OS
- *     permissions and sandboxing (Level 2) remain mandatory for hard isolation.
- *   - Allowing bare "node"/"node.exe" relies on the environment PATH; process.execPath
- *     is prioritized and validated via realpathSync.
+ *       * In --phase plan (Planner): generating/writing plan files requires diagnosis READY + APPROVED.
+ *       * In --phase migrate (Migrator): workspace file mutations and shell commands require diagnosis
+ *         READY + APPROVED, matching diagnosisHash, sequential prior phases COMPLETED, active phase
+ *         APPROVED with tasks, and (when targetFiles are declared) target path within active phase targetFiles.
  *
  * Zero external dependencies — uses only built-in Node.js modules.
  */
@@ -55,6 +50,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const ARTIFACTS_SUBDIR = path.join('.migration-artifacts', 'karma-to-vitest');
+const PLANS_SUBDIR = 'plans';
 const DIAGNOSIS_JSON = '01-diagnosis-report.json';
 const DIAGNOSIS_MD = '01-diagnosis-report.md';
 const DIAGNOSIS_HTML = '01-diagnosis-report.html';
@@ -62,7 +58,11 @@ const PLAN_JSON = '02-migration-plan.json';
 const PLAN_MD = '02-migration-plan.md';
 
 const PHASE1_IMMUTABLE_ARTIFACTS = new Set([DIAGNOSIS_JSON, DIAGNOSIS_MD, DIAGNOSIS_HTML]);
-const PHASE2_WRITABLE_ARTIFACTS = new Set([PLAN_JSON, PLAN_MD]);
+const PHASE2_MASTER_ARTIFACTS = new Set([PLAN_JSON, PLAN_MD]);
+const PHASE_PLAN_ARTIFACT_REGEX = /^plans\/phase-\d{2}-[a-z0-9-]+\.(json|md)$/;
+const PHASE_ID_REGEX = /^phase-\d{2}-[a-z0-9-]+$/;
+
+const VALID_HOOK_PHASES = new Set(['orchestrate', 'audit', 'plan', 'migrate']);
 
 const THIS_FILE = fileURLToPath(import.meta.url);
 const PLUGIN_ROOT_DIR = path.resolve(path.dirname(THIS_FILE), '..', '..', '..');
@@ -77,10 +77,37 @@ const TRUSTED_SCRIPT_SPECS = [
     relPath: path.join('skills', 'karma-vitest-audit', 'scripts', 'generate-diagnosis-report.mjs'),
   },
   {
+    name: 'generate-migration-plan.mjs',
+    relPath: path.join('skills', 'karma-vitest-audit', 'scripts', 'generate-migration-plan.mjs'),
+  },
+  {
     name: 'verify-artifacts-gate.mjs',
     relPath: path.join('skills', 'karma-vitest-migrate', 'scripts', 'verify-artifacts-gate.mjs'),
   },
+  {
+    name: 'approve-artifact.mjs',
+    relPath: path.join('skills', 'karma-vitest-migrate', 'scripts', 'approve-artifact.mjs'),
+  },
 ];
+
+// Least-privilege per-phase allowlist for trusted plugin scripts
+const ALLOWED_SCRIPTS_BY_PHASE = new Map([
+  ['orchestrate', new Set(['approve-artifact.mjs'])],
+  ['audit', new Set(['generate-diagnosis-report.mjs', 'check-prereqs.mjs'])],
+  [
+    'plan',
+    new Set([
+      'verify-artifacts-gate.mjs',
+      'generate-migration-plan.mjs',
+      'check-prereqs.mjs',
+      'generate-diagnosis-report.mjs',
+    ]),
+  ],
+  [
+    'migrate',
+    new Set(['verify-artifacts-gate.mjs', 'check-prereqs.mjs', 'generate-diagnosis-report.mjs']),
+  ],
+]);
 
 function realpathNative(p) {
   return typeof fs.realpathSync.native === 'function'
@@ -104,7 +131,6 @@ function buildTrustedScriptMap() {
 const TRUSTED_SCRIPT_REALPATHS = buildTrustedScriptMap();
 
 // Official GitHub Copilot preToolUse runtime tool identifiers ONLY
-// (strictly separated from agent frontmatter `tools:` aliases such as read/search/todo/agent)
 const READ_ONLY_RUNTIME_TOOLS = new Set([
   'view',
   'glob',
@@ -114,24 +140,28 @@ const READ_ONLY_RUNTIME_TOOLS = new Set([
   'update_todo',
 ]);
 
-// Subagent delegation tool in Copilot runtime: unconditionally denied inside Planner & Migrator
+// Tools permitted ONLY in Orchestrator (never in Analyst, Planner, or Migrator)
+const ORCHESTRATOR_ONLY_TOOLS = new Set(['task', 'vscode/askquestions']);
+
+// Subagent delegation tool in Copilot runtime: unconditionally denied inside Analyst, Planner & Migrator
 const BLOCKED_DELEGATION_TOOLS = new Set(['task']);
 
 // Official shell execution tools in Copilot preToolUse runtime
 const SHELL_RUNTIME_TOOLS = new Set(['bash', 'powershell']);
 
 // Closed grammar: disallow Bash, PowerShell, and Windows CMD metacharacters / expansions
-// On POSIX, backslashes are also disallowed to eliminate shell escape ambiguity.
 const FORBIDDEN_SHELL_CHARS_REGEX =
   process.platform === 'win32'
     ? /[$`%!&|;<>(){}*?~#^\r\n\0]/
     : /[$`%!&|;<>(){}*?~#^\\\r\n\0]/;
 
 const SAFE_ANGULAR_PROJECT_NAME_REGEX = /^[a-zA-Z0-9._/@-]+$/;
+const SAFE_REVIEWER_REGEX = /^[a-zA-Z0-9._@ -]{1,80}$/;
 
 function parseArgs(argv) {
   let projectDir = process.cwd();
   let phase = 'migrate';
+  let planPhase = null;
   let isHook = false;
 
   for (let i = 2; i < argv.length; i++) {
@@ -140,14 +170,44 @@ function parseArgs(argv) {
       projectDir = path.resolve(argv[++i]);
     } else if (arg === '--phase' && argv[i + 1]) {
       phase = argv[++i];
+    } else if (arg === '--plan-phase' && argv[i + 1]) {
+      planPhase = argv[++i].trim();
     } else if (arg === '--hook') {
       isHook = true;
     }
   }
-  return { projectDir, phase, isHook };
+  return { projectDir, phase, planPhase, isHook };
 }
 
-function validateGate(projectDir, phase) {
+function normalizePosixRel(p) {
+  return String(p || '')
+    .replace(/\\/g, '/')
+    .replace(/^\.\//, '')
+    .replace(/\/+/g, '/');
+}
+
+function collectAllowedTargetFiles(tasks) {
+  const set = new Set();
+  if (!Array.isArray(tasks)) return set;
+  for (const task of tasks) {
+    if (!task || !Array.isArray(task.targetFiles)) continue;
+    for (const f of task.targetFiles) {
+      if (typeof f === 'string' && f.trim()) {
+        set.add(normalizePosixRel(f.trim()));
+      }
+    }
+  }
+  return set;
+}
+
+function validateGate(projectDir, phase, requestedPlanPhase = null) {
+  if (phase !== 'plan' && phase !== 'migrate') {
+    return {
+      allowed: false,
+      reason: `Fase de validación CLI inválida "${phase}" (se esperaba "plan" o "migrate").`,
+    };
+  }
+
   const artifactsDir = path.join(projectDir, ARTIFACTS_SUBDIR);
   const diagJsonPath = path.join(artifactsDir, DIAGNOSIS_JSON);
   const diagMdPath = path.join(artifactsDir, DIAGNOSIS_MD);
@@ -213,6 +273,134 @@ function validateGate(projectDir, phase) {
     };
   }
 
+  // Multi-phase plan mode (schemaVersion 2.0.0, planMode: "multi-phase")
+  if (plan.planMode === 'multi-phase') {
+    if (!Array.isArray(plan.phases) || plan.phases.length === 0) {
+      return {
+        allowed: false,
+        reason: `El plan maestro (${PLAN_JSON}) no contiene fases en el arreglo "phases".`,
+      };
+    }
+
+    if (diag.diagnosisHash && plan.diagnosisHash && diag.diagnosisHash !== plan.diagnosisHash) {
+      return {
+        allowed: false,
+        reason: `Deriva detectada entre diagnóstico y plan maestro (diagnosisHash: ${diag.diagnosisHash} vs ${plan.diagnosisHash}). Regenera el plan de Fase 2.`,
+      };
+    }
+
+    const sortedPhases = [...plan.phases].sort((a, b) => (a.order || 0) - (b.order || 0));
+
+    // Load each phase file and determine the target active phase
+    const loadedPhases = [];
+    for (const entry of sortedPhases) {
+      if (!entry || typeof entry.phaseId !== 'string' || !PHASE_ID_REGEX.test(entry.phaseId)) {
+        return {
+          allowed: false,
+          reason: `Identificador de fase inválido en ${PLAN_JSON}: "${entry?.phaseId}".`,
+        };
+      }
+      const phaseJsonPath = path.join(artifactsDir, PLANS_SUBDIR, `${entry.phaseId}.json`);
+      if (!fs.existsSync(phaseJsonPath)) {
+        return {
+          allowed: false,
+          reason: `Falta el archivo de fase plans/${entry.phaseId}.json referenciado en ${PLAN_JSON}.`,
+        };
+      }
+      let phaseObj;
+      try {
+        phaseObj = JSON.parse(fs.readFileSync(phaseJsonPath, 'utf8'));
+      } catch (err) {
+        return {
+          allowed: false,
+          reason: `El archivo plans/${entry.phaseId}.json no contiene JSON válido: ${err.message}`,
+        };
+      }
+      loadedPhases.push({ entry, phaseObj });
+    }
+
+    let activeRecord = null;
+    if (requestedPlanPhase) {
+      if (!PHASE_ID_REGEX.test(requestedPlanPhase)) {
+        return {
+          allowed: false,
+          reason: `Valor de --plan-phase inválido: "${requestedPlanPhase}".`,
+        };
+      }
+      activeRecord = loadedPhases.find((r) => r.entry.phaseId === requestedPlanPhase) || null;
+      if (!activeRecord) {
+        return {
+          allowed: false,
+          reason: `La fase solicitada "${requestedPlanPhase}" no existe en ${PLAN_JSON}.`,
+        };
+      }
+    } else {
+      activeRecord = loadedPhases.find((r) => r.phaseObj.status !== 'COMPLETED') || null;
+      if (!activeRecord) {
+        return {
+          allowed: false,
+          reason: `Todas las fases en ${PLAN_JSON} ya están en estado COMPLETED. No hay fases pendientes de migración.`,
+        };
+      }
+    }
+
+    const activeId = activeRecord.entry.phaseId;
+    const activePhase = activeRecord.phaseObj;
+
+    if (diag.diagnosisHash && activePhase.diagnosisHash && diag.diagnosisHash !== activePhase.diagnosisHash) {
+      return {
+        allowed: false,
+        reason: `Deriva detectada en plans/${activeId}.json (diagnosisHash: ${diag.diagnosisHash} vs ${activePhase.diagnosisHash}). Regenera el plan antes de migrar.`,
+      };
+    }
+
+    // Sequential gate: every prior phase must be COMPLETED
+    for (const prev of loadedPhases) {
+      if (prev.entry.phaseId === activeId) break;
+      if (prev.phaseObj.status !== 'COMPLETED') {
+        return {
+          allowed: false,
+          reason: `No se puede ejecutar "${activeId}" porque la fase previa "${prev.entry.phaseId}" está en estado "${prev.phaseObj.status}" (debe ser "COMPLETED").`,
+        };
+      }
+    }
+
+    if (activePhase.dependsOnPhase) {
+      const dep = loadedPhases.find((r) => r.entry.phaseId === activePhase.dependsOnPhase);
+      if (!dep || dep.phaseObj.status !== 'COMPLETED') {
+        return {
+          allowed: false,
+          reason: `La fase "${activeId}" depende de "${activePhase.dependsOnPhase}", que no está en estado COMPLETED.`,
+        };
+      }
+    }
+
+    if (activePhase?.approval?.status !== 'APPROVED') {
+      return {
+        allowed: false,
+        reason: `La fase "${activeId}" (plans/${activeId}.json) tiene approval.status="${activePhase?.approval?.status || 'PENDING'}". Un especialista debe aprobar esta fase antes de ejecutarla.`,
+      };
+    }
+
+    if (!Array.isArray(activePhase.tasks) || activePhase.tasks.length === 0) {
+      return {
+        allowed: false,
+        reason: `La fase "${activeId}" no contiene tareas ejecutables en "tasks".`,
+      };
+    }
+
+    const allowedTargetFiles = collectAllowedTargetFiles(activePhase.tasks);
+
+    return {
+      allowed: true,
+      planMode: 'multi-phase',
+      activePhaseId: activeId,
+      allowedTargetFiles,
+      reason: `Gate de Fase 3 superado para la fase "${activeId}": diagnóstico READY + APPROVED, fases previas COMPLETED y fase activa APPROVED.`,
+    };
+  }
+
+  // Legacy monolithic single-plan mode (backward compatibility)
   if (plan?.approval?.status !== 'APPROVED') {
     return {
       allowed: false,
@@ -227,16 +415,19 @@ function validateGate(projectDir, phase) {
     };
   }
 
+  const allowedTargetFiles = collectAllowedTargetFiles(plan.tasks);
+
   return {
     allowed: true,
+    planMode: 'single-plan',
+    activePhaseId: null,
+    allowedTargetFiles,
     reason: 'Gate de Fase 3 (Migración) superado: diagnóstico y plan ejecutable en estado APPROVED.',
   };
 }
 
 /**
  * Strict camelCase contract for Copilot preToolUse: reads ONLY event.toolArgs.
- * Accepts either a plain object or a JSON-serialized object string defensively
- * (the official schema types toolArgs as `unknown`).
  */
 function parseToolArgsObject(event) {
   if (!Object.prototype.hasOwnProperty.call(event, 'toolArgs')) {
@@ -262,11 +453,6 @@ function parseToolArgsObject(event) {
   return null;
 }
 
-/**
- * Resolves the real filesystem path even when trailing segments do not exist yet,
- * catching existing symlinks anywhere along the ancestor chain.
- * Note: preToolUse path checks cannot prevent TOCTOU races between check and write.
- */
 function resolveRealPathAllowingMissingTail(targetPath) {
   const absolute = path.resolve(targetPath);
   const missingSegments = [];
@@ -299,10 +485,6 @@ function isStrictSubpathOrEqual(baseDir, candidatePath, { allowEqual = false } =
   return segments[0] !== '..' && !segments.includes('..');
 }
 
-/**
- * Closed grammar tokenizer for authorized plugin script invocations only.
- * Disallows shell metacharacters, variable expansions, and escape ambiguity.
- */
 function tokenizeClosedCommand(command) {
   if (typeof command !== 'string') return null;
   const trimmed = command.trim();
@@ -361,7 +543,6 @@ function tokenizeClosedCommand(command) {
 function isAllowedNodeExecutable(execToken) {
   if (!execToken || typeof execToken !== 'string') return false;
 
-  // Priority 1: explicit absolute path matching the current Node.js runtime binary
   if (path.isAbsolute(execToken)) {
     try {
       return realpathNative(execToken) === realpathNative(process.execPath);
@@ -370,7 +551,6 @@ function isAllowedNodeExecutable(execToken) {
     }
   }
 
-  // Priority 2: bare `node` / `node.exe` (relies on environment PATH; relative paths like ./node are rejected)
   const lower = execToken.toLowerCase();
   return lower === 'node' || lower === 'node.exe';
 }
@@ -392,53 +572,93 @@ function isProjectArgWithinWorkspace(projectArg, projectDir) {
 }
 
 function validateScriptContractArgs(scriptName, args, projectDir) {
-  let seenProject = false;
-  let seenPhase = false;
-  let seenHook = false;
-  let seenAngularProject = false;
+  const seen = new Set();
 
   for (let i = 0; i < args.length; i++) {
     const flag = args[i];
 
     if (flag === '--project' || flag === '-p') {
-      if (seenProject) return false;
+      if (seen.has('project')) return false;
       const val = args[i + 1];
       if (!val || !isProjectArgWithinWorkspace(val, projectDir)) {
         return false;
       }
-      seenProject = true;
+      seen.add('project');
       i++;
       continue;
     }
 
-    if (scriptName === 'generate-diagnosis-report.mjs' && flag === '--angular-project') {
-      if (seenAngularProject) return false;
+    if (
+      (scriptName === 'generate-diagnosis-report.mjs' || scriptName === 'generate-migration-plan.mjs') &&
+      flag === '--angular-project'
+    ) {
+      if (seen.has('angular-project')) return false;
       const val = args[i + 1];
-      if (
-        !val ||
-        val.startsWith('-') ||
-        val.includes('..') ||
-        !SAFE_ANGULAR_PROJECT_NAME_REGEX.test(val)
-      ) {
+      if (!val || val.startsWith('-') || val.includes('..') || !SAFE_ANGULAR_PROJECT_NAME_REGEX.test(val)) {
         return false;
       }
-      seenAngularProject = true;
+      seen.add('angular-project');
       i++;
       continue;
     }
 
     if (scriptName === 'verify-artifacts-gate.mjs' && flag === '--phase') {
-      if (seenPhase) return false;
+      if (seen.has('phase')) return false;
       const val = args[i + 1];
       if (val !== 'plan' && val !== 'migrate') return false;
-      seenPhase = true;
+      seen.add('phase');
+      i++;
+      continue;
+    }
+
+    if (scriptName === 'verify-artifacts-gate.mjs' && flag === '--plan-phase') {
+      if (seen.has('plan-phase')) return false;
+      const val = args[i + 1];
+      if (!val || !PHASE_ID_REGEX.test(val)) return false;
+      seen.add('plan-phase');
       i++;
       continue;
     }
 
     if (scriptName === 'verify-artifacts-gate.mjs' && flag === '--hook') {
-      if (seenHook) return false;
-      seenHook = true;
+      if (seen.has('hook')) return false;
+      seen.add('hook');
+      continue;
+    }
+
+    if (scriptName === 'approve-artifact.mjs' && flag === '--artifact') {
+      if (seen.has('artifact')) return false;
+      const val = args[i + 1];
+      if (val !== 'diagnosis' && val !== 'phase') return false;
+      seen.add('artifact');
+      i++;
+      continue;
+    }
+
+    if (scriptName === 'approve-artifact.mjs' && flag === '--plan-phase') {
+      if (seen.has('plan-phase')) return false;
+      const val = args[i + 1];
+      if (!val || !PHASE_ID_REGEX.test(val)) return false;
+      seen.add('plan-phase');
+      i++;
+      continue;
+    }
+
+    if (scriptName === 'approve-artifact.mjs' && flag === '--reviewer') {
+      if (seen.has('reviewer')) return false;
+      const val = args[i + 1];
+      if (!val || !SAFE_REVIEWER_REGEX.test(val)) return false;
+      seen.add('reviewer');
+      i++;
+      continue;
+    }
+
+    if (scriptName === 'approve-artifact.mjs' && flag === '--mode') {
+      if (seen.has('mode')) return false;
+      const val = args[i + 1];
+      if (val !== 'chat-confirmed' && val !== 'manual-json') return false;
+      seen.add('mode');
+      i++;
       continue;
     }
 
@@ -448,30 +668,33 @@ function validateScriptContractArgs(scriptName, args, projectDir) {
   return true;
 }
 
-function isApprovedPluginScriptInvocation(command, projectDir) {
+/**
+ * Inspects a shell command against the canonical trusted plugin scripts registry.
+ * Returns { matchedScriptName, validArgs } or null if not a trusted plugin script.
+ */
+function inspectTrustedPluginScriptInvocation(command, projectDir) {
   const tokens = tokenizeClosedCommand(command);
-  if (!tokens || tokens.length < 2) return false;
+  if (!tokens || tokens.length < 2) return null;
 
   const [execToken, scriptToken, ...restArgs] = tokens;
-  if (!isAllowedNodeExecutable(execToken)) return false;
-
-  // Reject any Node CLI option before the script path (e.g., node -e, node --eval, node -r)
-  if (scriptToken.startsWith('-')) return false;
+  if (!isAllowedNodeExecutable(execToken)) return null;
+  if (scriptToken.startsWith('-')) return null;
 
   const resolvedScript = path.resolve(projectDir, scriptToken);
   let realScript;
   try {
     realScript = realpathNative(resolvedScript);
   } catch {
-    return false;
+    return null;
   }
 
   const matchedScriptName = TRUSTED_SCRIPT_REALPATHS.get(realScript);
   if (!matchedScriptName) {
-    return false;
+    return null;
   }
 
-  return validateScriptContractArgs(matchedScriptName, restArgs, projectDir);
+  const validArgs = validateScriptContractArgs(matchedScriptName, restArgs, projectDir);
+  return { matchedScriptName, validArgs };
 }
 
 // =============================================================================
@@ -562,14 +785,6 @@ function extractPairTargets(argsObj) {
   return [source, dest];
 }
 
-function extractRenameTargets(argsObj) {
-  return extractPairTargets(argsObj);
-}
-
-function extractMoveTargets(argsObj) {
-  return extractPairTargets(argsObj);
-}
-
 function extractPatchTargets(argsObj) {
   const patchText = getExactlyOneStringField(argsObj, ['patch', 'input', 'diff']);
   if (!patchText) return null;
@@ -600,8 +815,8 @@ const FILE_MUTATION_ADAPTERS = new Map([
   ['edit', extractEditTargets],
   ['create', extractCreateTargets],
   ['delete', extractDeleteTargets],
-  ['rename', extractRenameTargets],
-  ['move', extractMoveTargets],
+  ['rename', extractPairTargets],
+  ['move', extractPairTargets],
   ['apply_patch', extractPatchTargets],
   ['patch', extractPatchTargets],
 ]);
@@ -609,8 +824,8 @@ const FILE_MUTATION_ADAPTERS = new Map([
 /**
  * Classifies a single target path into:
  *   - { kind: 'INVALID', reason }
- *   - { kind: 'INSIDE_ARTIFACTS', artifactRel }
- *   - { kind: 'INSIDE_WORKSPACE' }
+ *   - { kind: 'INSIDE_ARTIFACTS', artifactRel, workspaceRel }
+ *   - { kind: 'INSIDE_WORKSPACE', workspaceRel }
  */
 function classifyTargetPath(rawTarget, projectDir) {
   const normalized = normalizeTargetPath(rawTarget);
@@ -651,25 +866,31 @@ function classifyTargetPath(rawTarget, projectDir) {
     };
   }
 
+  const workspaceRel = normalizePosixRel(path.relative(workspaceReal, candidateReal));
+
   if (reallyInArtifacts) {
-    const artifactRel = path.relative(artifactsReal, candidateReal).replace(/\\/g, '/');
-    return { kind: 'INSIDE_ARTIFACTS', artifactRel };
+    const artifactRel = normalizePosixRel(path.relative(artifactsReal, candidateReal));
+    return { kind: 'INSIDE_ARTIFACTS', artifactRel, workspaceRel };
   }
 
-  return { kind: 'INSIDE_WORKSPACE' };
+  return { kind: 'INSIDE_WORKSPACE', workspaceRel };
+}
+
+function isPlannerWritableArtifact(artifactRel) {
+  return PHASE2_MASTER_ARTIFACTS.has(artifactRel) || PHASE_PLAN_ARTIFACT_REGEX.test(artifactRel);
 }
 
 /**
  * Evaluates a preToolUse hook event into one of three explicit outcomes:
- *   - { decision: 'DENY', reason }               -> Unconditional deny (never bypassed by workflow approval)
- *   - { decision: 'NO_DECISION' }                -> Emit {} (delegate to normal harness permission flow)
- *   - { decision: 'REQUIRE_GATE', gatePhase }    -> Allow NO_DECISION only if validateGate(gatePhase) passes
+ *   - { decision: 'DENY', reason }
+ *   - { decision: 'NO_DECISION' }
+ *   - { decision: 'REQUIRE_GATE', gatePhase, classifications? }
  */
 function evaluateToolCall(event, projectDir, phase) {
-  if (phase !== 'plan' && phase !== 'migrate') {
+  if (!VALID_HOOK_PHASES.has(phase)) {
     return {
       decision: 'DENY',
-      reason: `Fase de hook inválida "${phase}" (se esperaba "plan" o "migrate").`,
+      reason: `Fase de hook inválida "${phase}" (se esperaba "orchestrate", "audit", "plan" o "migrate").`,
     };
   }
 
@@ -689,11 +910,20 @@ function evaluateToolCall(event, projectDir, phase) {
 
   const toolName = event.toolName.trim().toLowerCase();
 
-  // Unconditionally block subagent delegation inside Planner and Migrator
-  if (BLOCKED_DELEGATION_TOOLS.has(toolName)) {
+  // Orchestrator-only tools (task delegation and VS Code askQuestions widget)
+  if (ORCHESTRATOR_ONLY_TOOLS.has(toolName)) {
+    if (phase === 'orchestrate') {
+      return { decision: 'NO_DECISION' };
+    }
+    if (BLOCKED_DELEGATION_TOOLS.has(toolName)) {
+      return {
+        decision: 'DENY',
+        reason: `La herramienta de delegación "${toolName}" está bloqueada en fase "${phase}" para evitar mutaciones no auditadas en subagentes.`,
+      };
+    }
     return {
       decision: 'DENY',
-      reason: `La herramienta de delegación "${toolName}" está bloqueada en Fase ${phase === 'plan' ? '2 (Planner)' : '3 (Migrator)'} para evitar mutaciones no auditadas en subagentes.`,
+      reason: `Herramienta "${event.toolName}" solo autorizada para el Orquestador (denegada en "${phase}").`,
     };
   }
 
@@ -717,15 +947,42 @@ function evaluateToolCall(event, projectDir, phase) {
       };
     }
 
-    if (isApprovedPluginScriptInvocation(command, projectDir)) {
+    const trusted = inspectTrustedPluginScriptInvocation(command, projectDir);
+    const allowedScripts = ALLOWED_SCRIPTS_BY_PHASE.get(phase);
+
+    if (trusted) {
+      if (!trusted.validArgs) {
+        return {
+          decision: 'DENY',
+          reason: `Argumentos inválidos o fuera de contrato para el script "${trusted.matchedScriptName}".`,
+        };
+      }
+      if (!allowedScripts.has(trusted.matchedScriptName)) {
+        return {
+          decision: 'DENY',
+          reason: `El script "${trusted.matchedScriptName}" no está autorizado en la fase "${phase}".`,
+        };
+      }
+      // Generating migration plan in Phase 2 still requires Phase 1 gate (READY + APPROVED)
+      if (phase === 'plan' && trusted.matchedScriptName === 'generate-migration-plan.mjs') {
+        return { decision: 'REQUIRE_GATE', gatePhase: 'plan' };
+      }
       return { decision: 'NO_DECISION' };
     }
 
-    // Planner is strictly read-only on source code: arbitrary shell commands are unconditionally denied
-    if (phase === 'plan') {
+    // Orchestrator, Analyst, and Planner may NEVER run arbitrary shell commands
+    if (phase !== 'migrate') {
       return {
         decision: 'DENY',
-        reason: 'Karma-Vitest Planner solo puede ejecutar scripts oficiales del plugin; los comandos shell arbitrarios están bloqueados en Fase 2.',
+        reason: `Comandos shell arbitrarios bloqueados en fase "${phase}". Solo se permiten los scripts oficiales autorizados para este agente.`,
+      };
+    }
+
+    // Extra defense: never allow invoking approve-artifact.mjs by any alias inside Migrator
+    if (command.includes('approve-artifact.mjs')) {
+      return {
+        decision: 'DENY',
+        reason: 'Karma-Vitest Migrator no puede ejecutar approve-artifact.mjs (prohibida la auto-aprobación).',
       };
     }
 
@@ -734,6 +991,14 @@ function evaluateToolCall(event, projectDir, phase) {
 
   // Known file mutation tools with dedicated per-tool adapters
   if (FILE_MUTATION_ADAPTERS.has(toolName)) {
+    // Orchestrator and Analyst must NEVER mutate files via file-mutation tools
+    if (phase === 'orchestrate' || phase === 'audit') {
+      return {
+        decision: 'DENY',
+        reason: `La herramienta de escritura "${toolName}" está estrictamente bloqueada en fase "${phase}".`,
+      };
+    }
+
     const argsObj = parseToolArgsObject(event);
     if (!argsObj) {
       return {
@@ -751,14 +1016,14 @@ function evaluateToolCall(event, projectDir, phase) {
       };
     }
 
+    const classifications = [];
     for (const target of targets) {
       const classification = classifyTargetPath(target, projectDir);
       if (classification.kind === 'INVALID') {
         return { decision: 'DENY', reason: classification.reason };
       }
 
-      // Phase 1 diagnosis artifacts are immutable during both Phase 2 (Planner) and Phase 3 (Migrator)
-      // to prevent self-approval or tampering.
+      // Phase 1 diagnosis artifacts are immutable during Planner and Migrator
       if (
         classification.kind === 'INSIDE_ARTIFACTS' &&
         PHASE1_IMMUTABLE_ARTIFACTS.has(classification.artifactRel)
@@ -769,31 +1034,75 @@ function evaluateToolCall(event, projectDir, phase) {
         };
       }
 
-      // In Phase 2 (Planner): ONLY 02-migration-plan.json and 02-migration-plan.md are writable
+      // In Phase 2 (Planner): ONLY 02-migration-plan.{json,md} and plans/phase-XX-*.{json,md}
       if (phase === 'plan') {
         if (
           classification.kind !== 'INSIDE_ARTIFACTS' ||
-          !PHASE2_WRITABLE_ARTIFACTS.has(classification.artifactRel)
+          !isPlannerWritableArtifact(classification.artifactRel)
         ) {
           return {
             decision: 'DENY',
-            reason: `Karma-Vitest Planner solo puede escribir ${PLAN_JSON} y ${PLAN_MD} dentro de ${ARTIFACTS_SUBDIR}. Destino bloqueado: "${target}".`,
+            reason: `Karma-Vitest Planner solo puede escribir ${PLAN_JSON}, ${PLAN_MD} y plans/phase-XX-*.{json,md} dentro de ${ARTIFACTS_SUBDIR}. Destino bloqueado: "${target}".`,
           };
         }
       }
+
+      classifications.push({ rawTarget: target, ...classification });
     }
 
-    // Phase 2 requires diagnosis READY + APPROVED before writing 02-migration-plan.*
-    // Phase 3 requires diagnosis READY + APPROVED AND plan APPROVED before ANY mutation
-    // (including 02-migration-plan.json, preventing Migrator self-approval).
-    return { decision: 'REQUIRE_GATE', gatePhase: phase };
+    return { decision: 'REQUIRE_GATE', gatePhase: phase, classifications };
   }
 
-  // Unknown tool -> UNCONDITIONAL DENY (never bypassed by workflow approval)
+  // Unknown tool -> UNCONDITIONAL DENY
   return {
     decision: 'DENY',
     reason: `Herramienta desconocida o no autorizada "${event.toolName}" (default-deny).`,
   };
+}
+
+function validateMigratorTargetScope(classifications, gateResult) {
+  if (!Array.isArray(classifications) || classifications.length === 0) {
+    return { allowed: true };
+  }
+
+  const allowedTargets = gateResult.allowedTargetFiles || new Set();
+  const enforceWorkspaceTargets = allowedTargets.size > 0;
+  const activePhaseRel = gateResult.activePhaseId
+    ? `plans/${gateResult.activePhaseId}.json`
+    : null;
+
+  for (const item of classifications) {
+    if (item.kind === 'INSIDE_ARTIFACTS') {
+      if (gateResult.planMode === 'multi-phase') {
+        if (item.artifactRel !== PLAN_JSON && item.artifactRel !== activePhaseRel) {
+          return {
+            allowed: false,
+            reason: `Durante la fase activa "${gateResult.activePhaseId}", Migrator solo puede actualizar ${PLAN_JSON} o ${activePhaseRel}. Destino bloqueado: "${item.rawTarget}".`,
+          };
+        }
+      } else {
+        if (item.artifactRel !== PLAN_JSON) {
+          return {
+            allowed: false,
+            reason: `Migrator solo puede actualizar el estado de tareas en ${PLAN_JSON}. Destino bloqueado: "${item.rawTarget}".`,
+          };
+        }
+      }
+      continue;
+    }
+
+    if (item.kind === 'INSIDE_WORKSPACE' && enforceWorkspaceTargets) {
+      if (!allowedTargets.has(item.workspaceRel)) {
+        const phaseLabel = gateResult.activePhaseId ? ` de la fase aprobada "${gateResult.activePhaseId}"` : ' del plan aprobado';
+        return {
+          allowed: false,
+          reason: `El archivo "${item.workspaceRel}" no figura en targetFiles${phaseLabel}. Edición fuera de alcance denegada.`,
+        };
+      }
+    }
+  }
+
+  return { allowed: true };
 }
 
 function emitDeny(reason) {
@@ -805,7 +1114,7 @@ function emitDeny(reason) {
   );
 }
 
-function runHookMode(defaultProjectDir, phase) {
+function runHookMode(defaultProjectDir, phase, planPhase) {
   let stdinText = '';
   try {
     stdinText = fs.readFileSync(0, 'utf8').trim();
@@ -839,26 +1148,45 @@ function runHookMode(defaultProjectDir, phase) {
     return;
   }
 
-  const check = validateGate(projectDir, evaluation.gatePhase);
-  if (check.allowed) {
-    process.stdout.write('{}\n');
-  } else {
+  const check = validateGate(projectDir, evaluation.gatePhase, planPhase);
+  if (!check.allowed) {
     emitDeny(check.reason);
-  }
-}
-
-function main() {
-  const { projectDir, phase, isHook } = parseArgs(process.argv);
-
-  if (isHook) {
-    runHookMode(projectDir, phase);
     return;
   }
 
-  const result = validateGate(projectDir, phase);
+  if (evaluation.gatePhase === 'migrate' && evaluation.classifications) {
+    const scopeCheck = validateMigratorTargetScope(evaluation.classifications, check);
+    if (!scopeCheck.allowed) {
+      emitDeny(scopeCheck.reason);
+      return;
+    }
+  }
+
+  process.stdout.write('{}\n');
+}
+
+function main() {
+  const { projectDir, phase, planPhase, isHook } = parseArgs(process.argv);
+
+  if (isHook) {
+    runHookMode(projectDir, phase, planPhase);
+    return;
+  }
+
+  const result = validateGate(projectDir, phase, planPhase);
   if (result.allowed) {
     process.stdout.write(
-      `${JSON.stringify({ status: 'ALLOWED', phase, message: result.reason }, null, 2)}\n`
+      `${JSON.stringify(
+        {
+          status: 'ALLOWED',
+          phase,
+          planMode: result.planMode || null,
+          activePhaseId: result.activePhaseId || null,
+          message: result.reason,
+        },
+        null,
+        2
+      )}\n`
     );
     process.exit(0);
   } else {

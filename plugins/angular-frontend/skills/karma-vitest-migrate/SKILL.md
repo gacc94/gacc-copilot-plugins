@@ -1,33 +1,36 @@
 ---
 name: karma-vitest-migrate
-description: Ejecuta de manera determinista la migración de Jasmine/Karma a Vitest siguiendo el plan aprobado (02-migration-plan.json), protegida por el validador y hook preToolUse verify-artifacts-gate.mjs
+description: Controla la ejecución determinista por fases aprobadas, registra aprobaciones humanas confirmadas en Copilot Chat (approve-artifact.mjs) y provee el validador y hooks preToolUse (verify-artifacts-gate.mjs)
 user-invocable: false
 ---
 # Skill: `karma-vitest-migrate`
 
-Esta skill controla la ejecución determinista de la **Fase 3 (Implementación)** y provee el validador de gate (`scripts/verify-artifacts-gate.mjs`) utilizado tanto en CLI como en los hooks agent-scoped `preToolUse` del **Copilot harness** (compartido entre VS Code y GitHub Copilot CLI).
+Esta skill controla la ejecución determinista de la **Fase 3 (Implementación por fases aprobadas)**, provee el validador de gate y hooks `preToolUse` (`scripts/verify-artifacts-gate.mjs`) para los 4 agentes del **Copilot harness** (VS Code y Copilot CLI), y expone el registrador auditable de aprobaciones híbridas (`scripts/approve-artifact.mjs`). Se mantiene `user-invocable: false` para impedir invocaciones fuera del Orquestador.
 
 ## 1. Verificación del Gate de Artefactos (`scripts/verify-artifacts-gate.mjs`)
 
-Ejecuta `scripts/verify-artifacts-gate.mjs` ubicado en el directorio de esta skill (ruta relativa al directorio que contiene este `SKILL.md`). Soporta dos modos de operación:
+Ejecuta `scripts/verify-artifacts-gate.mjs` ubicado en el directorio de esta skill (ruta relativa al directorio que contiene este `SKILL.md`). Soporta dos modos:
 
 ### A. Modo CLI (`--phase plan` o `--phase migrate`)
 ```bash
 # Validar antes de generar el plan (Fase 2): exige 01-diagnosis-report.json con status=READY y approval.status=APPROVED
 node scripts/verify-artifacts-gate.mjs --project "." --phase plan
 
-# Validar antes de ejecutar la migración (Fase 3): exige además 02-migration-plan.json con approval.status=APPROVED
-node scripts/verify-artifacts-gate.mjs --project "." --phase migrate
+# Validar antes de ejecutar una fase específica de migración (Fase 3 multi-fase):
+node scripts/verify-artifacts-gate.mjs --project "." --phase migrate --plan-phase phase-01-coexistence
 ```
 
-### B. Modo Hook `preToolUse` del Copilot Harness (`--hook --phase <plan|migrate>`)
-* Declarado como **agent-scoped hook** en el frontmatter `hooks.preToolUse` de dos subagentes (dejando intactas las sesiones normales de desarrollo y la Fase 1):
-  * `com.github.copilot/agents/karma-vitest-planner.agent.md` (`--hook --phase plan`): impide modificar código fuente, ejecutar comandos shell arbitrarios o alterar `01-diagnosis-report.*`, y exige que el diagnóstico esté `READY` + `APPROVED` antes de escribir `02-migration-plan.{json,md}`.
-  * `com.github.copilot/agents/karma-vitest-migrator.agent.md` (`--hook --phase migrate`): impide alterar `01-diagnosis-report.*` (inmutable) y exige que diagnóstico (`READY` + `APPROVED`) y plan (`APPROVED` + `tasks`) estén aprobados antes de cualquier edición (incluyendo `02-migration-plan.json`, evitando auto-aprobación) o comando shell fuera de los scripts del plugin.
+### B. Modo Hook `preToolUse` del Copilot Harness (`--hook --phase <orchestrate|audit|plan|migrate>`)
+Declarado como **agent-scoped hook** en el frontmatter `hooks.preToolUse` de los 4 agentes del plugin (sin afectar sesiones normales de desarrollo):
+* **`karma-vitest-orchestrator.agent.md` (`--hook --phase orchestrate`):** permite solo lectura, `task`, `vscode/askQuestions` y el script `approve-artifact.mjs`; bloquea cualquier edición directa de archivos y cualquier otro comando shell.
+* **`karma-vitest-analyst.agent.md` (`--hook --phase audit`):** permite solo lectura y los scripts `generate-diagnosis-report.mjs` / `check-prereqs.mjs`; bloquea ediciones, `task` y comandos shell arbitrarios.
+* **`karma-vitest-planner.agent.md` (`--hook --phase plan`):** bloquea código fuente, `01-diagnosis-report.*`, `task`, `approve-artifact.mjs` y shell arbitrario; exige diagnóstico `READY` + `APPROVED` antes de ejecutar `generate-migration-plan.mjs` o escribir `02-migration-plan.{json,md}` y `plans/phase-XX-*.{json,md}`.
+* **`karma-vitest-migrator.agent.md` (`--hook --phase migrate`):** bloquea `01-diagnosis-report.*`, `task`, `approve-artifact.mjs` y fases no activas; exige diagnóstico `READY` + `APPROVED`, `diagnosisHash` coincidente, fases previas `COMPLETED`, fase activa `APPROVED` con tareas y valida que toda edición en el repositorio esté dentro de `tasks[*].targetFiles` de la fase aprobada.
+
 * Implementa el contrato camelCase oficial de **GitHub Copilot** (`preToolUse`):
-  * Lee por `stdin` el payload JSON del evento (`{ sessionId, timestamp, cwd, toolName, toolArgs }`, aceptando defensivamente `toolArgs` como objeto o string JSON).
+  * Lee por `stdin` `{ sessionId, timestamp, cwd, toolName, toolArgs }`.
   * Emite por `stdout`:
-    * `{}` (**`NO_DECISION`**): deja continuar el flujo normal de permisos del harness (no equivale a conceder permiso incondicional).
+    * `{}` (**`NO_DECISION`**): deja continuar el flujo normal de permisos del harness.
     * Formato JSON plano oficial para denegar (**`DENY`**):
       ```json
       {
@@ -35,32 +38,21 @@ node scripts/verify-artifacts-gate.mjs --project "." --phase migrate
         "permissionDecisionReason": "..."
       }
       ```
-* **Modelo de decisión en 3 estados:**
-  1. **`DENY` incondicional** *(nunca se omite, aunque el diagnóstico y el plan estén `APPROVED`)*:
-     * `stdin` vacío/inválido, ausencia de `toolName`, `--phase` inválido o `toolArgs` malformados.
-     * Herramienta desconocida o alias de configuración no pertenecientes a los identificadores reales del runtime (`read`, `search`, `todo`, `agent`, `agent/runSubagent`, herramientas desconocidas).
-     * Delegación mediante `task`: bloqueada incondicionalmente en Planner y Migrator para evitar mutaciones no auditadas en subagentes.
-     * Mutación de `01-diagnosis-report.{json,md,html}` (inmutables tras Fase 1).
-     * En `--phase plan`: cualquier escritura fuera de `02-migration-plan.{json,md}` y cualquier comando shell fuera de los 3 scripts confiables del plugin.
-     * Destinos de archivo no verificables, esquemas URI distintos de `file://`, rutas UNC, parches incompletos, escapes por symlink desde `.migration-artifacts/karma-to-vitest` o rutas fuera del workspace.
-  2. **`NO_DECISION` (`{}`)** *(exento del gate de aprobación)*:
-     * Herramientas de solo lectura / no mutantes documentadas en el runtime de hooks (`view`, `glob`, `grep`, `ask_user`, `web_fetch`, `update_todo`).
-     * Invocaciones directas vía `bash` o `powershell` hacia las **rutas canónicas reales (`realpath`)** de los 3 scripts confiables del plugin (`check-prereqs.mjs`, `generate-diagnosis-report.mjs`, `verify-artifacts-gate.mjs`), usando gramática cerrada sin metacaracteres de Bash/PowerShell/CMD, sin opciones previas de Node, priorizando `process.execPath` y restringiendo `--project` dentro del workspace actual.
-  3. **`REQUIRE_GATE`**:
-     * En `--phase plan`: escribir `02-migration-plan.{json,md}` requiere `validateGate('plan')` (`01-diagnosis-report.json` en `READY` + `APPROVED`).
-     * En `--phase migrate`: editar archivos del workspace (incluyendo `02-migration-plan.json` para actualizar `tasks[*].status`) o ejecutar comandos shell de migración requiere `validateGate('migrate')` (`01-diagnosis-report.json` `READY` + `APPROVED` y `02-migration-plan.json` `APPROVED` con `tasks`).
 
-## 2. Separación de Niveles de Seguridad y Limitaciones Conocidas
+## 2. Registro de Aprobación Humana Confirmada en Chat (`scripts/approve-artifact.mjs`)
 
-* **Nivel 1 — Control de Workflow del Plugin (`verify-artifacts-gate.mjs` + hooks agent-scoped):** Controla la disciplina de las 3 fases mientras operan `Karma-Vitest Planner` y `Karma-Vitest Migrator`, sin bloquear sesiones normales de desarrollo.
-* **Nivel 2 — Gobernanza Organizacional (fuera del alcance del plugin):** Políticas administradas de GitHub Copilot Enterprise, permisos del sistema operativo, sandboxing, branch protection y CI. Estos hooks complementan pero **no sustituyen** controles organizacionales ni de sandbox.
-* **Limitaciones documentadas del runtime:**
-  * **Timeout fail-open:** En GitHub Copilot, los errores / códigos de salida distintos de `0` en command hooks `preToolUse` son fail-closed, pero los **timeouts son fail-open** (continúa el flujo normal de permisos). Por ello el script mantiene ejecución local rápida y sin llamadas de red.
-  * **Condiciones de carrera TOCTOU:** Validar symlinks en `preToolUse` no elimina condiciones de carrera entre verificación y escritura si otro proceso modifica un symlink concurrentemente; el aislamiento duro requiere sandboxing del entorno.
-  * **Confianza en `PATH`:** Si el agente invoca `node` / `node.exe` por nombre en lugar de la ruta absoluta de `process.execPath`, la resolución depende del `PATH` del entorno.
+Script determinista reservado **exclusivamente al Orquestador** (bloqueado por hook en Analyst, Planner y Migrator) para registrar la aprobación humana solo después de una confirmación explícita del usuario en `#vscode/askQuestions` o Copilot CLI:
 
-## 3. Reglas de Ejecución Determinista en Fase 3
+```bash
+# Aprobar diagnóstico (falla automáticamente si status !== "READY"):
+node scripts/approve-artifact.mjs --project "." --artifact diagnosis --reviewer "user" --mode chat-confirmed
 
-1. **Cero desviaciones respecto al plan:** Solo pueden modificarse los archivos listados en `tasks[*].targetFiles` dentro de `.migration-artifacts/karma-to-vitest/02-migration-plan.json`.
-2. **Orden estricto:** Ejecutar las tareas siguiendo `tasks[*].order`.
-3. **Trazabilidad:** Actualizar `tasks[*].status` a `"COMPLETED"` en `02-migration-plan.json` conforme cada paso finalice y verificar con `npx ng test --watch=false`.
+# Aprobar una fase específica (falla si el diagnóstico no está APPROVED, si diagnosisHash derivó o si una fase previa no está COMPLETED):
+node scripts/approve-artifact.mjs --project "." --artifact phase --plan-phase phase-01-coexistence --reviewer "user" --mode chat-confirmed
+```
+
+## 3. Reglas de Ejecución Determinista del Migrator
+1. Nunca ejecutes ni modifiques archivos si `verify-artifacts-gate.mjs` devuelve código distinto de `0`.
+2. Ejecuta **exactamente una fase aprobada por invocación** (`plans/<phaseId>.json`), respetando la convivencia Karma + Vitest hasta la fase `cutover-cleanup`.
+3. Edita **únicamente** los archivos declarados en `tasks[*].targetFiles` de la fase activa.
+4. Ejecuta todos los comandos en `verificationCommands[]` de la fase antes de marcar `status: "COMPLETED"` en `plans/<phaseId>.json` y `02-migration-plan.json`.

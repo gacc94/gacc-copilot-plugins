@@ -31,6 +31,20 @@ const DIAGNOSIS_SCRIPT = path.join(
   'scripts',
   'generate-diagnosis-report.mjs'
 );
+const PLANNER_SCRIPT = path.join(
+  PLUGIN_ROOT,
+  'skills',
+  'karma-vitest-audit',
+  'scripts',
+  'generate-migration-plan.mjs'
+);
+const APPROVE_SCRIPT = path.join(
+  PLUGIN_ROOT,
+  'skills',
+  'karma-vitest-migrate',
+  'scripts',
+  'approve-artifact.mjs'
+);
 
 const ARTIFACTS_REL = path.join('.migration-artifacts', 'karma-to-vitest');
 
@@ -637,11 +651,23 @@ test('Hook Security (Files): per-tool adapters, symlinks, URIs, Unicode, patches
         {
           cwd: dir,
           toolName: 'create',
+          toolArgs: { path: 'src/..notes.spec.ts', content: '// spec' },
+        },
+        dir
+      ),
+      'Filename starting with .. inside workspace (src/..notes.spec.ts) must not false-positive on traversal check'
+    );
+
+    assertDenied(
+      runHookGate(
+        {
+          cwd: dir,
+          toolName: 'create',
           toolArgs: { path: '.migration-artifacts/karma-to-vitest/..backup.json', content: '{}' },
         },
         dir
       ),
-      'Filename starting with .. inside artifacts (..backup.json) must not false-positive'
+      'Migrator must deny writing unrelated files inside .migration-artifacts/karma-to-vitest/'
     );
 
     assertNoDecision(
@@ -887,6 +913,376 @@ test('Hook Performance: completes local gate evaluation well below timeoutSec (1
     const elapsedMs = Date.now() - start;
     assertDenied(out, 'Unapproved workspace edit must be denied');
     assert.ok(elapsedMs < 2000, `Hook took ${elapsedMs}ms; must remain fast to minimize fail-open timeout risk`);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+// =============================================================================
+// 9. Multi-Phase Coexistence Lifecycle: Diagnosis Hash/Score -> Deterministic Planner -> Hybrid Approval -> Migrator targetFiles Scope
+// =============================================================================
+test('End-to-End Multi-Phase Coexistence: diagnosisHash, complexityScore 1-10, deterministic batching, approve-artifact.mjs, and targetFiles enforcement', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'gacc-multiphase-e2e-'));
+  try {
+    fs.mkdirSync(path.join(dir, 'src', 'app', 'auth'), { recursive: true });
+    fs.mkdirSync(path.join(dir, 'src', 'app', 'billing'), { recursive: true });
+    fs.writeFileSync(
+      path.join(dir, 'package.json'),
+      JSON.stringify({
+        name: 'enterprise-ng-app',
+        dependencies: { '@angular/core': '^21.2.0' },
+        devDependencies: { '@angular/cli': '^21.2.0', karma: '^6.4.0', 'jasmine-core': '^5.1.0' },
+      })
+    );
+    fs.writeFileSync(
+      path.join(dir, 'angular.json'),
+      JSON.stringify({
+        projects: {
+          'enterprise-ng-app': {
+            root: '',
+            architect: {
+              test: {
+                builder: '@angular-devkit/build-angular:karma',
+                options: { tsConfig: 'tsconfig.spec.json', karmaConfig: 'karma.conf.js' },
+              },
+            },
+          },
+        },
+      })
+    );
+    fs.writeFileSync(path.join(dir, 'tsconfig.spec.json'), '{"compilerOptions":{"types":["jasmine"]}}\n');
+    fs.writeFileSync(path.join(dir, 'karma.conf.js'), 'module.exports = { proxies: { "/api": "http://localhost" } };\n');
+    fs.writeFileSync(path.join(dir, 'src', 'app', 'auth', 'login.service.ts'), 'export class LoginService {}\n');
+    fs.writeFileSync(path.join(dir, 'src', 'app', 'auth', 'login.spec.ts'), 'it("low", () => { expect(true).toBe(true); });\n');
+    fs.writeFileSync(
+      path.join(dir, 'src', 'app', 'billing', 'invoice.spec.ts'),
+      'it("med", fakeAsync(() => { tick(100); spyOn(a, "b").and.returnValue(1); }));\n'
+    );
+    fs.writeFileSync(
+      path.join(dir, 'src', 'app', 'billing', 'clock.spec.ts'),
+      'it("high", () => { jasmine.clock().install(); spyOnProperty(x, "y"); });\n'
+    );
+
+    // 1. Run Phase 1 Diagnosis
+    const diagRes = spawnSync(process.execPath, [DIAGNOSIS_SCRIPT, '--project', dir], { encoding: 'utf8' });
+    assert.equal(diagRes.status, 0, diagRes.stderr);
+    const diagSummary = JSON.parse(diagRes.stdout.trim());
+    assert.equal(diagSummary.status, 'READY');
+    assert.match(diagSummary.diagnosisHash, /^sha256:[a-f0-9]{16}$/);
+
+    const diagJsonPath = path.join(dir, ARTIFACTS_REL, '01-diagnosis-report.json');
+    const diagJson = JSON.parse(fs.readFileSync(diagJsonPath, 'utf8'));
+    assert.equal(diagJson.schemaVersion, '1.3.0');
+    assert.equal(diagJson.specInventory.length, 3);
+    for (const s of diagJson.specInventory) {
+      assert.ok(Number.isInteger(s.complexityScore) && s.complexityScore >= 1 && s.complexityScore <= 10);
+      if (s.complexity === 'low') assert.ok(s.complexityScore <= 3);
+      if (s.complexity === 'medium') assert.ok(s.complexityScore >= 4 && s.complexityScore <= 6);
+      if (s.complexity === 'high') assert.ok(s.complexityScore >= 7);
+    }
+
+    // 2. Planner script MUST fail before diagnosis approval
+    const planFailRes = spawnSync(process.execPath, [PLANNER_SCRIPT, '--project', dir], { encoding: 'utf8' });
+    assert.equal(planFailRes.status, 1, 'generate-migration-plan.mjs must refuse unapproved diagnosis');
+
+    // 3. Approve diagnosis via approve-artifact.mjs (chat-confirmed hybrid approval)
+    const approveDiagRes = spawnSync(
+      process.execPath,
+      [APPROVE_SCRIPT, '--project', dir, '--artifact', 'diagnosis', '--reviewer', 'gustavo', '--mode', 'chat-confirmed'],
+      { encoding: 'utf8' }
+    );
+    assert.equal(approveDiagRes.status, 0, approveDiagRes.stderr);
+    const updatedDiag = JSON.parse(fs.readFileSync(diagJsonPath, 'utf8'));
+    assert.equal(updatedDiag.approval.status, 'APPROVED');
+    assert.equal(updatedDiag.approval.mode, 'chat-confirmed');
+
+    // 4. Generate deterministic multi-phase plan
+    const planRes = spawnSync(process.execPath, [PLANNER_SCRIPT, '--project', dir], { encoding: 'utf8' });
+    assert.equal(planRes.status, 0, planRes.stderr);
+    const planSummary = JSON.parse(planRes.stdout.trim());
+    assert.equal(planSummary.planMode, 'multi-phase');
+    // Expect 5 phases: coexistence + low + medium + high + cutover-cleanup
+    assert.equal(planSummary.phaseCount, 5);
+    assert.equal(planSummary.phases[0].phaseId, 'phase-01-coexistence');
+    assert.equal(planSummary.phases[4].kind, 'cutover-cleanup');
+
+    // 5. Cannot approve phase-02 while phase-01 is still PENDING
+    const phase2Id = planSummary.phases[1].phaseId;
+    const approveEarlyRes = spawnSync(
+      process.execPath,
+      [APPROVE_SCRIPT, '--project', dir, '--artifact', 'phase', '--plan-phase', phase2Id, '--reviewer', 'gustavo'],
+      { encoding: 'utf8' }
+    );
+    assert.equal(approveEarlyRes.status, 1, 'Must block approving phase-02 before phase-01 is COMPLETED');
+
+    // 6. Approve phase-01-coexistence
+    const approveP1Res = spawnSync(
+      process.execPath,
+      [APPROVE_SCRIPT, '--project', dir, '--artifact', 'phase', '--plan-phase', 'phase-01-coexistence', '--reviewer', 'gustavo'],
+      { encoding: 'utf8' }
+    );
+    assert.equal(approveP1Res.status, 0, approveP1Res.stderr);
+
+    // 7. Migrator hook during phase-01-coexistence:
+    //    - Editing angular.json (in targetFiles) -> NO_DECISION ({})
+    //    - Editing src/app/auth/login.service.ts (NOT in targetFiles) -> DENY
+    //    - Editing unapproved plans/phase-02-*.json -> DENY
+    //    - Editing active plans/phase-01-coexistence.json -> NO_DECISION ({})
+    assertNoDecision(
+      runHookGate({ cwd: dir, toolName: 'edit', toolArgs: { path: 'angular.json' } }, dir, 'migrate'),
+      'Migrator should be allowed to edit angular.json declared in phase-01 targetFiles'
+    );
+    assertDenied(
+      runHookGate({ cwd: dir, toolName: 'edit', toolArgs: { path: 'src/app/auth/login.service.ts' } }, dir, 'migrate'),
+      'Migrator must DENY editing files outside active phase targetFiles'
+    );
+    assertDenied(
+      runHookGate({ cwd: dir, toolName: 'edit', toolArgs: { path: `${ARTIFACTS_REL}/plans/${phase2Id}.json` } }, dir, 'migrate'),
+      'Migrator must DENY editing an unapproved future phase plan file'
+    );
+    assertNoDecision(
+      runHookGate(
+        { cwd: dir, toolName: 'edit', toolArgs: { path: `${ARTIFACTS_REL}/plans/phase-01-coexistence.json` } },
+        dir,
+        'migrate'
+      ),
+      'Migrator should be allowed to update task/phase status in active approved phase file'
+    );
+
+    // 8. Drift detection: mutating diagnosisHash in 01-diagnosis-report.json blocks Migrator
+    updatedDiag.diagnosisHash = 'sha256:ffffffffffffffff';
+    fs.writeFileSync(diagJsonPath, JSON.stringify(updatedDiag, null, 2));
+    assertDenied(
+      runHookGate({ cwd: dir, toolName: 'edit', toolArgs: { path: 'angular.json' } }, dir, 'migrate'),
+      'Migrator must DENY when diagnosisHash drifted from plan'
+    );
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+// =============================================================================
+// 10. Orchestrator (--phase orchestrate) & Analyst (--phase audit) Hooks + Planner plans/ Writes
+// =============================================================================
+test('Hooks (--phase orchestrate, --phase audit, --phase plan): enforce strict least privilege across all 4 agents', () => {
+  const dir = createTempWorkspace();
+  try {
+    approveDiagnosisOnly(dir);
+
+    // Orchestrator (--phase orchestrate): allows read-only, task, vscode/askQuestions, approve-artifact.mjs; denies edits & arbitrary shell
+    assertNoDecision(
+      runHookGate({ cwd: dir, toolName: 'task', toolArgs: { prompt: 'Run Analyst' } }, dir, 'orchestrate'),
+      'Orchestrator must be allowed to delegate via task'
+    );
+    assertNoDecision(
+      runHookGate({ cwd: dir, toolName: 'vscode/askQuestions', toolArgs: {} }, dir, 'orchestrate'),
+      'Orchestrator must be allowed to use vscode/askQuestions'
+    );
+    assertNoDecision(
+      runHookGate(
+        {
+          cwd: dir,
+          toolName: 'bash',
+          toolArgs: {
+            command: `"${process.execPath}" "${APPROVE_SCRIPT}" --project "${dir}" --artifact diagnosis --reviewer gustavo --mode chat-confirmed`,
+          },
+        },
+        dir,
+        'orchestrate'
+      ),
+      'Orchestrator must be allowed to invoke approve-artifact.mjs with valid contract args'
+    );
+    assertDenied(
+      runHookGate({ cwd: dir, toolName: 'edit', toolArgs: { path: 'package.json' } }, dir, 'orchestrate'),
+      'Orchestrator must NEVER edit files directly'
+    );
+    assertDenied(
+      runHookGate({ cwd: dir, toolName: 'bash', toolArgs: { command: 'npx ng test' } }, dir, 'orchestrate'),
+      'Orchestrator must NEVER run arbitrary shell commands'
+    );
+
+    // Analyst (--phase audit): allows generate-diagnosis-report.mjs & check-prereqs.mjs; denies edits, task, approve-artifact, arbitrary shell
+    assertNoDecision(
+      runHookGate(
+        {
+          cwd: dir,
+          toolName: 'bash',
+          toolArgs: { command: `"${process.execPath}" "${DIAGNOSIS_SCRIPT}" --project "${dir}"` },
+        },
+        dir,
+        'audit'
+      ),
+      'Analyst must be allowed to run generate-diagnosis-report.mjs'
+    );
+    assertDenied(
+      runHookGate({ cwd: dir, toolName: 'task', toolArgs: { prompt: 'Delegate' } }, dir, 'audit'),
+      'Analyst must NEVER delegate via task'
+    );
+    assertDenied(
+      runHookGate({ cwd: dir, toolName: 'edit', toolArgs: { path: 'src/app.component.ts' } }, dir, 'audit'),
+      'Analyst must NEVER edit workspace files'
+    );
+    assertDenied(
+      runHookGate(
+        {
+          cwd: dir,
+          toolName: 'bash',
+          toolArgs: {
+            command: `"${process.execPath}" "${APPROVE_SCRIPT}" --project "${dir}" --artifact diagnosis --reviewer bot`,
+          },
+        },
+        dir,
+        'audit'
+      ),
+      'Analyst must NEVER run approve-artifact.mjs'
+    );
+
+    // Planner (--phase plan): allows plans/phase-01-coexistence.{json,md} & generate-migration-plan.mjs; blocks approve-artifact.mjs & invalid names
+    assertNoDecision(
+      runHookGate(
+        {
+          cwd: dir,
+          toolName: 'create',
+          toolArgs: { path: `${ARTIFACTS_REL}/plans/phase-01-coexistence.json`, content: '{}' },
+        },
+        dir,
+        'plan'
+      ),
+      'Planner must be allowed to write plans/phase-XX-*.json after diagnosis approval'
+    );
+    assertNoDecision(
+      runHookGate(
+        {
+          cwd: dir,
+          toolName: 'bash',
+          toolArgs: { command: `"${process.execPath}" "${PLANNER_SCRIPT}" --project "${dir}"` },
+        },
+        dir,
+        'plan'
+      ),
+      'Planner must be allowed to invoke generate-migration-plan.mjs after diagnosis approval'
+    );
+    assertDenied(
+      runHookGate(
+        {
+          cwd: dir,
+          toolName: 'create',
+          toolArgs: { path: `${ARTIFACTS_REL}/plans/arbitrary.ts`, content: '' },
+        },
+        dir,
+        'plan'
+      ),
+      'Planner must DENY writing non-phase files inside plans/'
+    );
+    assertDenied(
+      runHookGate(
+        {
+          cwd: dir,
+          toolName: 'bash',
+          toolArgs: {
+            command: `"${process.execPath}" "${APPROVE_SCRIPT}" --project "${dir}" --artifact diagnosis --reviewer bot`,
+          },
+        },
+        dir,
+        'plan'
+      ),
+      'Planner must NEVER run approve-artifact.mjs'
+    );
+
+    // Migrator (--phase migrate): must NEVER run approve-artifact.mjs even when workflow approved
+    approveWorkflow(dir);
+    assertDenied(
+      runHookGate(
+        {
+          cwd: dir,
+          toolName: 'bash',
+          toolArgs: {
+            command: `"${process.execPath}" "${APPROVE_SCRIPT}" --project "${dir}" --artifact phase --plan-phase phase-01-coexistence --reviewer bot`,
+          },
+        },
+        dir,
+        'migrate'
+      ),
+      'Migrator must NEVER invoke approve-artifact.mjs (no self-approval)'
+    );
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+// =============================================================================
+// 11. Pattern Precision: SpyObj<T>, jasmine.isSpy, calls.reset, expectedOutcome, and Legacy Build Builder Warning
+// =============================================================================
+test('Diagnosis Generator: detects jasmine.SpyObj<T>, jasmine.isSpy(), spy.calls.reset(), expectedOutcome, and legacy browser build builder', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'gacc-diag-patterns-'));
+  try {
+    fs.mkdirSync(path.join(dir, 'src', 'app'), { recursive: true });
+    fs.writeFileSync(
+      path.join(dir, 'package.json'),
+      JSON.stringify({
+        name: 'pattern-check-app',
+        dependencies: { '@angular/core': '^21.2.0' },
+        devDependencies: { '@angular/cli': '^21.2.0', karma: '^6.4.0', 'jasmine-core': '^5.1.0' },
+      })
+    );
+    fs.writeFileSync(
+      path.join(dir, 'angular.json'),
+      JSON.stringify({
+        projects: {
+          'pattern-check-app': {
+            root: '',
+            architect: {
+              build: { builder: '@angular-devkit/build-angular:browser' },
+              test: { builder: '@angular-devkit/build-angular:karma', options: {} },
+            },
+          },
+        },
+      })
+    );
+    fs.writeFileSync(
+      path.join(dir, 'src', 'app', 'simple.spec.ts'),
+      'it("simple", () => { expect(true).toBe(true); });\n'
+    );
+    fs.writeFileSync(
+      path.join(dir, 'src', 'app', 'spyobj.spec.ts'),
+      'let svc: jasmine.SpyObj<UserService>;\nfoo.calls.reset();\n'
+    );
+    fs.writeFileSync(
+      path.join(dir, 'src', 'app', 'isspy.spec.ts'),
+      'it("checks spy", () => { expect(jasmine.isSpy(fn)).toBeTrue(); });\n'
+    );
+
+    const res = spawnSync(process.execPath, [DIAGNOSIS_SCRIPT, '--project', dir], { encoding: 'utf8' });
+    assert.equal(res.status, 0, res.stderr);
+
+    const diagJson = JSON.parse(
+      fs.readFileSync(path.join(dir, ARTIFACTS_REL, '01-diagnosis-report.json'), 'utf8')
+    );
+
+    assert.equal(diagJson.status, 'READY');
+    assert.equal(diagJson.recommendedStrategy, 'HYBRID_SCHEMATIC_PLUS_AGENT');
+    assert.equal(diagJson.detected.buildBuilder, '@angular-devkit/build-angular:browser');
+    assert.ok(
+      diagJson.warnings.some((w) => w.code === 'LEGACY_BUILD_SYSTEM_DETECTED'),
+      'Must warn when build target does not use @angular/build:application'
+    );
+
+    const byFile = new Map(diagJson.specInventory.map((s) => [s.file, s]));
+
+    const simple = byFile.get('src/app/simple.spec.ts');
+    assert.equal(simple.complexity, 'low');
+    assert.equal(simple.expectedOutcome, 'automatically_migrated');
+
+    const spyObj = byFile.get('src/app/spyobj.spec.ts');
+    assert.equal(spyObj.complexity, 'medium');
+    assert.equal(spyObj.expectedOutcome, 'requires_review');
+    assert.ok(spyObj.jasminePatterns.includes('jasmine.SpyObj<T>'));
+    assert.ok(spyObj.jasminePatterns.includes('spy.calls.reset'));
+
+    const isSpy = byFile.get('src/app/isspy.spec.ts');
+    assert.equal(isSpy.complexity, 'high');
+    assert.equal(isSpy.expectedOutcome, 'manual_migration');
+    assert.ok(isSpy.jasminePatterns.includes('jasmine.isSpy'));
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }

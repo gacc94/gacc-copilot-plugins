@@ -6,7 +6,9 @@ Plugin en formato **Agent Plugins 1.0** para **GitHub Copilot (VS Code con Copil
 
 ## 1. Requisitos de Uso
 
-* **VS Code** con **GitHub Copilot Chat** (harness **Copilot**) o **GitHub Copilot CLI**.
+* **Visual Studio Code `>= 1.133.0`** *(recomendado **`>= 1.143.0`** / `>= 1.146.0`)* con **GitHub Copilot Chat** (harness **Copilot**) o **GitHub Copilot CLI**.
+  * Verifica tu versión local con `code --version`.
+  * **Mínimo por capacidad (notas oficiales de VS Code):** [`1.109+`](https://code.visualstudio.com/updates/v1_109) (`user-invocable`), [`1.110+`](https://code.visualstudio.com/updates/v1_110) (`chat.plugins.enabled`), [`1.111+`](https://code.visualstudio.com/updates/v1_111) (*agent-scoped hooks* en preview / `chat.useCustomAgentHooks`), [`1.133+`](https://code.visualstudio.com/updates/v1_133) (**Agent Plugins 1.0** y `com.github.copilot/agents/`), [`1.143+`](https://code.visualstudio.com/updates/v1_143) (**Copilot harness** por defecto; Local harness deprecado en [`1.146`](https://code.visualstudio.com/updates/v1_146)).
 * **Node.js `>= 20.19.0`** instalado en el entorno local (`node -v`).
   * Para proyectos en **Angular 21**: Node.js `^20.19.0 || ^22.12.0 || ^24.0.0`.
   * Para proyectos en **Angular 22**: Node.js `^22.22.3 || ^24.15.0 || ^26.0.0`.
@@ -72,28 +74,30 @@ Si clonaste el repositorio en tu máquina (por ejemplo `/Users/<usuario>/gacc-co
 
 El plugin se utiliza seleccionando el **agente orquestador** en el **menú desplegable `Agents`** de Copilot Chat (o desde Copilot CLI).
 
-Solo aparece **1 agente visible** en el selector; los otros **3 subagentes internos** (`user-invocable: false`) permanecen ocultos del menú y son invocados automáticamente por el orquestador en cada fase mediante la delegación nativa del **Copilot harness** (`task`), recibiendo explícitamente el contexto necesario (workspace, proyecto de `angular.json`, rutas de artefactos previos y formato esperado de retorno):
+Solo aparece **1 agente visible** en el selector; los otros **3 subagentes internos** (`user-invocable: false`) permanecen ocultos del menú y son invocados automáticamente por el orquestador en cada fase mediante la delegación nativa del **Copilot harness** (`task`), recibiendo explícitamente el contexto necesario (workspace, proyecto de `angular.json`, rutas de artefactos previos y formato esperado de retorno).
+
+> **Diagramas de arquitectura (Mermaid):** Consulta el diagrama de flujo y el diagrama de secuencia completos en [docs/orchestrator-architecture.md](./docs/orchestrator-architecture.md).
 
 | Agente | Visibilidad en `Agents` | Hook de migración | Rol a alto nivel |
 | :--- | :---: | :---: | :--- |
-| **`Angular Karma-to-Vitest`** (`karma-vitest-orchestrator`) | **Visible en el selector** | No | Punto de entrada único para el desarrollador. Coordina las 3 fases, pasa contexto explícito a cada subagente (incluyendo el proyecto elegido en `angular.json`), bloquea el avance ante `BLOCKED` y exige aprobación humana en cada checkpoint. |
-| **`Karma-Vitest Analyst`** (`karma-vitest-analyst`) | Subagente interno | No | **Fase 1 (Diagnóstico Visual + Estructurado):** Carga `karma-vitest-audit` y ejecuta `scripts/generate-diagnosis-report.mjs` (con `--angular-project` si aplica) sin tocar código fuente para evaluar Angular 21+ (`READY` vs `BLOCKED`), clasificar si basta el schematic oficial y generar `.migration-artifacts/karma-to-vitest/01-diagnosis-report.{json,md,html}`. |
-| **`Karma-Vitest Planner`** (`karma-vitest-planner`) | Subagente interno | **Sí (`preToolUse --phase plan`)** | **Fase 2 (Planificación):** Protegido por hook agent-scoped que impide modificar código fuente, ejecutar shell arbitrario o alterar `01-diagnosis-report.*`, y exige diagnóstico `READY` + `APPROVED` antes de escribir `02-migration-plan.{json,md}`. |
-| **`Karma-Vitest Migrator`** (`karma-vitest-migrator`) | Subagente interno | **Sí (`preToolUse --phase migrate`)** | **Fase 3 (Implementación):** Protegido por hook agent-scoped que impide modificar `01-diagnosis-report.*` o auto-aprobar `02-migration-plan.json`, exigiendo ambos artefactos `APPROVED` antes de aplicar las tareas del plan. |
+| **`Angular Karma-to-Vitest`** (`karma-vitest-orchestrator`) | **Visible en el selector** | **Sí (`preToolUse --phase orchestrate`)** | Punto de entrada único para el desarrollador. Coordina el flujo incremental por fases, lee con `read` cada JSON de salida, ofrece **aprobación humana híbrida** (`#vscode/askQuestions` + `approve-artifact.mjs` o edición manual en JSON) y tiene bloqueada cualquier edición directa o comando shell arbitrario. |
+| **`Karma-Vitest Analyst`** (`karma-vitest-analyst`) | Subagente interno | **Sí (`preToolUse --phase audit`)** | **Fase 1 (Diagnóstico Visual + Puntaje 1–10):** Restringido por hook a solo lectura + `generate-diagnosis-report.mjs` / `check-prereqs.mjs`. Evalúa Angular 21+ (`READY` vs `BLOCKED`), calcula `diagnosisHash` y `complexityScore` (`1–10`) por spec y genera `01-diagnosis-report.{json,md,html}`. |
+| **`Karma-Vitest Planner`** (`karma-vitest-planner`) | Subagente interno | **Sí (`preToolUse --phase plan`)** | **Fase 2 (Planificación Incremental Dinámica):** Ejecuta `generate-migration-plan.mjs` para particionar el 100% de `specInventory` en fases con convivencia (`test` + `test-vitest` + `tsconfig.spec.vitest.json`): `02-migration-plan.{json,md}` y `plans/phase-XX-*.{json,md}` (todas en `PENDING`). Bloquea código fuente, shell arbitrario y `01-diagnosis-report.*`. |
+| **`Karma-Vitest Migrator`** (`karma-vitest-migrator`) | Subagente interno | **Sí (`preToolUse --phase migrate`)** | **Fase 3 (Implementación por Fase Aprobada):** Ejecuta **una sola fase aprobada por invocación**. Verifica `diagnosisHash`, orden secuencial (`dependsOnPhase` en `COMPLETED`), aprobación de la fase activa y restringe toda edición exclusivamente a los archivos declarados en `tasks[*].targetFiles`. |
 
 ---
 
 ## 4. Guía de Alto Nivel: Skills (`skills/`) y Modelo de Seguridad
 
-Las skills encapsulan las reglas, esquemas y scripts deterministas en Node.js que cargan los agentes bajo demanda (`user-invocable: false`), ejecutando los scripts con rutas relativas a cada `SKILL.md`:
+Las skills encapsulan las reglas, esquemas y scripts deterministas en Node.js que cargan los agentes bajo demanda (todas con `user-invocable: false` para impedir ejecuciones fuera del Orquestador):
 
-* **`angular-migration-prereqs`**: Ejecuta `scripts/check-prereqs.mjs` para inspeccionar `package.json`, `angular.json`, `karma.conf.js` y `*.spec.ts`, clasificando la estrategia en **`UPGRADE_FIRST`** (`BLOCKED` si Angular `< 21`), **`OFFICIAL_SCHEMATIC_SUFFICIENT`** (basta el schematic oficial de Angular) o **`HYBRID_SCHEMATIC_PLUS_AGENT`** (requiere Fase 2 y Fase 3 del plugin).
-* **`karma-vitest-audit`**: Incluye `scripts/generate-diagnosis-report.mjs` (soporta `--project` y `--angular-project` para generar `01-diagnosis-report.{json,md,html}` con KPIs, hallazgos, barras Baja/Media/Alta, buscador de specs y hoja de ruta), además de los JSON Schemas y equivalencias Jasmine → Vitest.
-* **`karma-vitest-migrate`**: Contiene las reglas de transformación determinista y el validador `scripts/verify-artifacts-gate.mjs` (CLI + **agent-scoped hooks** `preToolUse` en `karma-vitest-planner.agent.md` y `karma-vitest-migrator.agent.md`) bajo un modelo de **3 estados de decisión** (`DENY` incondicional, `REQUIRE_GATE` y `NO_DECISION` `{}`) alineado exclusivamente a los nombres reales de herramientas del runtime del Copilot harness.
+* **`angular-migration-prereqs`**: Ejecuta `scripts/check-prereqs.mjs` para inspeccionar `package.json`, `angular.json`, `karma.conf.js` y `*.spec.ts`, clasificando la estrategia en **`UPGRADE_FIRST`** (`BLOCKED` si Angular `< 21`), **`OFFICIAL_SCHEMATIC_SUFFICIENT`** o **`HYBRID_SCHEMATIC_PLUS_AGENT`**.
+* **`karma-vitest-audit`**: Incluye `scripts/generate-diagnosis-report.mjs` (v1.3.0 con `diagnosisHash` y puntaje numérico `complexityScore` `1–10` por `*.spec.ts`) y `scripts/generate-migration-plan.mjs` (particionado determinista por complejidad, score y carpeta en `02-migration-plan.{json,md}` + `plans/phase-XX-*.{json,md}` con convivencia Karma + Vitest), además de los JSON Schemas (`diagnosis-report`, `migration-plan`, `migration-phase`) y equivalencias Jasmine → Vitest.
+* **`karma-vitest-migrate`**: Contiene las reglas de ejecución por fase, el registrador auditable `scripts/approve-artifact.mjs` (reservado al Orquestador tras confirmación explícita del usuario) y el validador `scripts/verify-artifacts-gate.mjs` (CLI + **4 agent-scoped hooks `preToolUse`**: `orchestrate`, `audit`, `plan`, `migrate`) con validación de `diagnosisHash`, secuencialidad de fases y restricción estricta a `targetFiles`.
 
 ### Separación de Niveles de Seguridad y Limitaciones
 
-* **Nivel 1 — Control de Workflow del Plugin (alcance de `verify-artifacts-gate.mjs`):** Los hooks `preToolUse` están acotados exclusivamente a Planner (`--phase plan`) y Migrator (`--phase migrate`) para garantizar la disciplina de las 3 fases, bloquear auto-aprobación y delegación por `task`, y exigir aprobación humana sin interferir con conversaciones normales de desarrollo.
+* **Nivel 1 — Control de Workflow del Plugin (alcance de `verify-artifacts-gate.mjs`):** Los hooks `preToolUse` están declarados en el frontmatter de los 4 agentes del plugin (sin afectar sesiones normales de desarrollo) aplicando mínimo privilegio por rol, bloqueando auto-aprobación (`approve-artifact.mjs` prohibido en todos los subagentes), delegación `task` en subagentes y ediciones fuera de `targetFiles`.
 * **Nivel 2 — Gobernanza Organizacional (fuera del alcance del plugin):** Las políticas obligatorias de seguridad a nivel de organización (políticas administradas de GitHub Copilot Enterprise, permisos del sistema operativo, sandboxing, branch protection y CI) son independientes del plugin.
 * **Limitaciones conocidas:** Los command hooks `preToolUse` tienen timeouts **fail-open** en el runtime de Copilot (los errores/salidas no cero son fail-closed) y la validación de symlinks previa a la escritura no elimina condiciones de carrera **TOCTOU**; por ello el gate no sustituye al sandboxing del entorno.
 
@@ -104,10 +108,8 @@ Las skills encapsulan las reglas, esquemas y scripts deterministas en Node.js qu
 1. **Abrir el selector de Agentes:** En **GitHub Copilot Chat** en VS Code (con el harness **Copilot** seleccionado) o en **Copilot CLI**, selecciona **`Angular Karma-to-Vitest`**.
 2. **Fase 1 — Diagnóstico:** Escribe en el chat:
    > *"Analiza este repositorio para migrar de Jasmine/Karma a Vitest."*
-3. **Fase 2 — Planificación Ejecutable:** Revisa `.migration-artifacts/karma-to-vitest/01-diagnosis-report.md` (y `.json`). Si el estado es `READY`, cambia `approval.status` a `"APPROVED"` y escribe en el chat:
-   > *"El diagnóstico está aprobado, genera el plan de migración."*
-4. **Fase 3 — Ejecución Determinista:** Revisa `.migration-artifacts/karma-to-vitest/02-migration-plan.md` (y `.json`), cambia `approval.status` a `"APPROVED"` y escribe en el chat:
-   > *"El plan está aprobado, ejecuta la migración."*
+3. **Checkpoint 1 (Aprobación Híbrida) y Fase 2 — Planificación por Fases:** Revisa `01-diagnosis-report.html` / `.md`. Si el estado es `READY`, aprueba directamente desde el asistente interactivo en Copilot Chat (o edita `approval.status = "APPROVED"` en `01-diagnosis-report.json`) para generar el índice maestro `02-migration-plan.json` y los subplanes `plans/phase-XX-*.json`.
+4. **Fase 3 — Ejecución Incremental con Convivencia:** Aprueba cada fase en orden (`phase-01-coexistence` → lotes `low`/`medium`/`high` → `cutover-cleanup`) desde Copilot Chat o en su JSON, valida ambos runners (`test` + `test-vitest`) + `ng build` en tu CI/preproducción tras cada fase y continúa con la siguiente cuando estés listo.
 
 ---
 
@@ -117,12 +119,12 @@ Las skills encapsulan las reglas, esquemas y scripts deterministas en Node.js qu
 Desde la raíz del repositorio `gacc-copilot-plugins`, ejecuta:
 
 ```bash
-node --test tests/verify-artifacts-gate.test.mjs tests/plugin-structure.test.mjs
+node --test __tests__/verify-artifacts-gate.test.mjs __tests__/plugin-structure.test.mjs
 ```
 
 ### Puntos críticos a confirmar en prueba real (VS Code Copilot Harness y Copilot CLI)
 Dado que los hooks definidos en frontmatter de `.agent.md` están en *preview* y las herramientas disponibles dependen de la versión del runtime, valida en **Agent Customizations** (`Chat: Open Customizations`), en los **registros de depuración del agente / diagnósticos del proveedor** en VS Code y en una prueba independiente con **Copilot CLI**:
 1. **Advertencias de herramientas (`vscode/askQuestions`):** Abrir `Chat: Open Customizations` y comprobar que `Angular Karma-to-Vitest` no muestre ninguna advertencia de herramienta desconocida para `vscode/askQuestions` bajo el Copilot harness (en caso de advertencia, reemplazarla por la herramienta interactiva soportada por tu versión del harness).
-2. **Ejecución real de hooks en frontmatter `.agent.md`:** Verificar en los registros de depuración del agente (y el ajuste `chat.useCustomAgentHooks` en VS Code si aplica) que `hooks.preToolUse` se dispara únicamente con `Planner` (`--phase plan`) y `Migrator` (`--phase migrate`), y **no** con `Orchestrator`, `Analyst` ni sesiones normales.
-3. **Restricciones en vivo:** Confirmar que `Planner` no puede editar código fuente ni alterar `01-diagnosis-report.*`, y que `Migrator` sin aprobación deniega ediciones (incluida `02-migration-plan.json`), comandos shell y delegación por `task`.
+2. **Ejecución real de hooks en frontmatter `.agent.md`:** Verificar en los registros de depuración del agente (y el ajuste `chat.useCustomAgentHooks` en VS Code si aplica) que `hooks.preToolUse` se dispara en los 4 agentes del plugin (`--phase orchestrate`, `audit`, `plan`, `migrate`) y **no** en sesiones normales fuera del plugin.
+3. **Restricciones en vivo:** Confirmar que `Orchestrator` no puede editar archivos ni ejecutar comandos fuera de `approve-artifact.mjs`, que `Analyst` solo ejecuta `generate-diagnosis-report.mjs`/`check-prereqs.mjs`, que `Planner` no puede editar código fuente ni alterar `01-diagnosis-report.*`, y que `Migrator` sin aprobación de fase o fuera de `targetFiles` deniega ediciones, comandos shell y delegación por `task`.
 4. **Timeout fail-open y Copilot CLI:** Reproducir en pruebas controladas el comportamiento fail-open ante timeout y repetir la verificación en **GitHub Copilot CLI**.

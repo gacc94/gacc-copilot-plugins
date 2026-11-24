@@ -1,21 +1,29 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://gacc.dev/schemas/angular-frontend/migration-plan.schema.json",
-  "title": "Angular Karma-to-Vitest Executable Migration Plan (Phase 2)",
+  "title": "Angular Karma-to-Vitest Master Migration Plan Index (Phase 2)",
   "type": "object",
   "required": [
     "schemaVersion",
+    "planMode",
     "createdAt",
     "basedOnDiagnosis",
+    "diagnosisHash",
     "projectName",
-    "tasks",
-    "verificationCommand",
-    "approval"
+    "coexistenceStrategy",
+    "totalSpecFiles",
+    "totalComplexityScore",
+    "phases",
+    "generatedFiles"
   ],
   "properties": {
     "schemaVersion": {
       "type": "string",
-      "const": "1.0.0"
+      "const": "2.0.0"
+    },
+    "planMode": {
+      "type": "string",
+      "const": "multi-phase"
     },
     "createdAt": {
       "type": "string",
@@ -25,48 +33,107 @@
       "type": "string",
       "const": ".migration-artifacts/karma-to-vitest/01-diagnosis-report.json"
     },
+    "diagnosisHash": {
+      "type": "string",
+      "pattern": "^sha256:[a-f0-9]{16}$"
+    },
     "projectName": {
       "type": "string"
     },
-    "tasks": {
+    "angularProject": {
+      "type": ["string", "null"]
+    },
+    "coexistenceStrategy": {
+      "type": "object",
+      "required": [
+        "mode",
+        "karmaTarget",
+        "vitestTarget",
+        "vitestTsConfig",
+        "specIsolation"
+      ],
+      "properties": {
+        "mode": {
+          "type": "string",
+          "const": "parallel-angular-target"
+        },
+        "karmaTarget": {
+          "type": "string"
+        },
+        "vitestTarget": {
+          "type": "string"
+        },
+        "vitestTsConfig": {
+          "type": "string"
+        },
+        "specIsolation": {
+          "type": "string",
+          "const": "include-exclude-config"
+        }
+      }
+    },
+    "totalSpecFiles": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "totalComplexityScore": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "phases": {
       "type": "array",
-      "minItems": 1,
+      "minItems": 2,
       "items": {
         "type": "object",
         "required": [
-          "id",
+          "phaseId",
           "order",
-          "category",
+          "kind",
           "title",
-          "targetFiles",
-          "actions",
-          "verification",
+          "dependsOnPhase",
+          "planFile",
+          "markdownFile",
+          "specCount",
+          "totalComplexityScore",
           "status"
         ],
         "properties": {
-          "id": { "type": "string" },
-          "order": { "type": "integer", "minimum": 1 },
-          "category": {
+          "phaseId": {
             "type": "string",
-            "enum": [
-              "dependencies",
-              "angular-config",
-              "tsconfig",
-              "cleanup",
-              "spec-transform",
-              "verification"
-            ]
+            "pattern": "^phase-[0-9]{2}-[a-z0-9-]+$"
           },
-          "title": { "type": "string" },
-          "targetFiles": {
-            "type": "array",
-            "items": { "type": "string" }
+          "order": {
+            "type": "integer",
+            "minimum": 1
           },
-          "actions": {
-            "type": "array",
-            "items": { "type": "string" }
+          "kind": {
+            "type": "string",
+            "enum": ["coexistence-setup", "spec-batch", "cutover-cleanup"]
           },
-          "verification": { "type": "string" },
+          "complexityTier": {
+            "type": ["string", "null"],
+            "enum": ["low", "medium", "high", null]
+          },
+          "title": {
+            "type": "string"
+          },
+          "dependsOnPhase": {
+            "type": ["string", "null"]
+          },
+          "planFile": {
+            "type": "string"
+          },
+          "markdownFile": {
+            "type": "string"
+          },
+          "specCount": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "totalComplexityScore": {
+            "type": "integer",
+            "minimum": 0
+          },
           "status": {
             "type": "string",
             "enum": ["PENDING", "IN_PROGRESS", "COMPLETED"]
@@ -74,20 +141,16 @@
         }
       }
     },
-    "verificationCommand": {
-      "type": "string"
-    },
-    "approval": {
+    "generatedFiles": {
       "type": "object",
-      "required": ["status", "reviewer", "approvedAt"],
+      "required": ["masterJson", "masterMarkdown", "phaseFiles"],
       "properties": {
-        "status": {
-          "type": "string",
-          "enum": ["PENDING", "APPROVED", "REJECTED"]
-        },
-        "reviewer": { "type": ["string", "null"] },
-        "approvedAt": { "type": ["string", "null"] },
-        "notes": { "type": ["string", "null"] }
+        "masterJson": { "type": "string" },
+        "masterMarkdown": { "type": "string" },
+        "phaseFiles": {
+          "type": "array",
+          "items": { "type": "string" }
+        }
       }
     }
   }

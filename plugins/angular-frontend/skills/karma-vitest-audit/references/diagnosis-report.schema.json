@@ -5,6 +5,7 @@
   "type": "object",
   "required": [
     "schemaVersion",
+    "diagnosisHash",
     "evaluatedAt",
     "projectPath",
     "status",
@@ -27,7 +28,11 @@
   "properties": {
     "schemaVersion": {
       "type": "string",
-      "const": "1.2.0"
+      "const": "1.3.0"
+    },
+    "diagnosisHash": {
+      "type": "string",
+      "pattern": "^sha256:[a-f0-9]{16}$"
     },
     "evaluatedAt": {
       "type": "string",
@@ -125,10 +130,12 @@
       "required": ["angularCoreVersion", "nodeVersion", "testBuilder", "specFileCount"],
       "properties": {
         "projectName": { "type": ["string", "null"] },
+        "selectedAngularProject": { "type": ["string", "null"] },
         "angularCoreVersion": { "type": ["string", "null"] },
         "angularCliVersion": { "type": ["string", "null"] },
         "nodeVersion": { "type": "string" },
         "testBuilder": { "type": ["string", "null"] },
+        "buildBuilder": { "type": ["string", "null"] },
         "angularProjectCount": { "type": "integer", "minimum": 0 },
         "testTargetCount": { "type": "integer", "minimum": 0 },
         "hasKarmaDeps": { "type": "boolean" },
@@ -195,7 +202,7 @@
       "type": "array",
       "items": {
         "type": "object",
-        "required": ["file", "jasminePatterns", "jasmineApiCount", "fakeAsyncTickCount", "complexity"],
+        "required": ["file", "jasminePatterns", "jasmineApiCount", "fakeAsyncTickCount", "complexity", "complexityScore"],
         "properties": {
           "file": { "type": "string" },
           "jasminePatterns": {
@@ -207,6 +214,15 @@
           "complexity": {
             "type": "string",
             "enum": ["low", "medium", "high"]
+          },
+          "complexityScore": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 10
+          },
+          "expectedOutcome": {
+            "type": "string",
+            "enum": ["automatically_migrated", "requires_review", "manual_migration"]
           }
         }
       }
@@ -243,6 +259,10 @@
         },
         "reviewer": { "type": ["string", "null"] },
         "approvedAt": { "type": ["string", "null"] },
+        "mode": {
+          "type": ["string", "null"],
+          "enum": ["manual-json", "chat-confirmed", null]
+        },
         "notes": { "type": ["string", "null"] }
       }
     }

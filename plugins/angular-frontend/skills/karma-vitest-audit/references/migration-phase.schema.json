@@ -1,0 +1,158 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://gacc.dev/schemas/angular-frontend/migration-phase.schema.json",
+  "title": "Angular Karma-to-Vitest Executable Phase Plan (Phase 2 -> Phase 3)",
+  "type": "object",
+  "required": [
+    "schemaVersion",
+    "phaseId",
+    "order",
+    "kind",
+    "title",
+    "createdAt",
+    "basedOnDiagnosis",
+    "diagnosisHash",
+    "projectName",
+    "dependsOnPhase",
+    "status",
+    "specCount",
+    "totalComplexityScore",
+    "tasks",
+    "verificationCommands",
+    "approval"
+  ],
+  "properties": {
+    "schemaVersion": {
+      "type": "string",
+      "const": "1.0.0"
+    },
+    "phaseId": {
+      "type": "string",
+      "pattern": "^phase-[0-9]{2}-[a-z0-9-]+$"
+    },
+    "order": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "kind": {
+      "type": "string",
+      "enum": ["coexistence-setup", "spec-batch", "cutover-cleanup"]
+    },
+    "complexityTier": {
+      "type": ["string", "null"],
+      "enum": ["low", "medium", "high", null]
+    },
+    "title": {
+      "type": "string"
+    },
+    "createdAt": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "basedOnDiagnosis": {
+      "type": "string",
+      "const": ".migration-artifacts/karma-to-vitest/01-diagnosis-report.json"
+    },
+    "diagnosisHash": {
+      "type": "string",
+      "pattern": "^sha256:[a-f0-9]{16}$"
+    },
+    "projectName": {
+      "type": "string"
+    },
+    "angularProject": {
+      "type": ["string", "null"]
+    },
+    "dependsOnPhase": {
+      "type": ["string", "null"]
+    },
+    "status": {
+      "type": "string",
+      "enum": ["PENDING", "IN_PROGRESS", "COMPLETED"]
+    },
+    "specCount": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "totalComplexityScore": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "specFiles": {
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "tasks": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": [
+          "id",
+          "order",
+          "category",
+          "title",
+          "targetFiles",
+          "actions",
+          "verification",
+          "status"
+        ],
+        "properties": {
+          "id": { "type": "string" },
+          "order": { "type": "integer", "minimum": 1 },
+          "category": {
+            "type": "string",
+            "enum": [
+              "dependencies",
+              "angular-config",
+              "tsconfig",
+              "cleanup",
+              "spec-transform",
+              "verification"
+            ]
+          },
+          "title": { "type": "string" },
+          "targetFiles": {
+            "type": "array",
+            "items": { "type": "string" }
+          },
+          "actions": {
+            "type": "array",
+            "items": { "type": "string" }
+          },
+          "verification": { "type": "string" },
+          "status": {
+            "type": "string",
+            "enum": ["PENDING", "IN_PROGRESS", "COMPLETED"]
+          },
+          "migrationOutcome": {
+            "type": ["string", "null"],
+            "enum": ["automatically_migrated", "requires_review", "manual_migration", null]
+          }
+        }
+      }
+    },
+    "verificationCommands": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "type": "string" }
+    },
+    "approval": {
+      "type": "object",
+      "required": ["status", "reviewer", "approvedAt"],
+      "properties": {
+        "status": {
+          "type": "string",
+          "enum": ["PENDING", "APPROVED", "REJECTED"]
+        },
+        "reviewer": { "type": ["string", "null"] },
+        "approvedAt": { "type": ["string", "null"] },
+        "mode": {
+          "type": ["string", "null"],
+          "enum": ["manual-json", "chat-confirmed", null]
+        },
+        "notes": { "type": ["string", "null"] }
+      }
+    }
+  }
+}

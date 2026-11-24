@@ -88,7 +88,7 @@ test('Agent Plugins 1.0: plugin.json declares official schema without legacy com
 
   assert.equal(manifest.$schema, 'https://agent-plugins.org/schemas/1.0.0/plugin.schema.json');
   assert.equal(manifest.name, 'angular-frontend');
-  assert.equal(manifest.version, '2.0.2');
+  assert.equal(manifest.version, '2.1.0');
   assert.equal(manifest.agents, undefined, 'Agent Plugins 1.0 must not declare legacy top-level "agents"');
   assert.equal(manifest.skills, undefined, 'Agent Plugins 1.0 must not declare legacy top-level "skills"');
   assert.match(manifest.description, /Copilot CLI/i, 'Description should reflect both VS Code and Copilot CLI scope');
@@ -115,7 +115,7 @@ test('Plugin Integrity: zero unresolvable plugin-path placeholders anywhere in p
 test('Schemas and Skills: valid JSON schemas and every script mentioned in SKILL.md exists in its skill scripts/ folder', () => {
   const schemasDir = path.join(SKILLS_DIR, 'karma-vitest-audit', 'references');
   const schemaFiles = fs.readdirSync(schemasDir).filter((f) => f.endsWith('.schema.json'));
-  assert.ok(schemaFiles.length >= 2, 'Expected diagnosis and migration plan schemas');
+  assert.ok(schemaFiles.length >= 3, 'Expected diagnosis, master plan, and phase plan schemas');
 
   for (const file of schemaFiles) {
     const parsed = readJson(path.join(schemasDir, file));
@@ -137,6 +137,12 @@ test('Schemas and Skills: valid JSON schemas and every script mentioned in SKILL
     assert.ok(fs.existsSync(skillMdPath), `Missing SKILL.md in ${skillName}`);
 
     const content = fs.readFileSync(skillMdPath, 'utf8');
+    const { rawFrontmatter } = parseFrontmatter(content);
+    assert.equal(
+      getScalarField(rawFrontmatter, 'user-invocable'),
+      'false',
+      `Skill ${skillName}/SKILL.md must enforce user-invocable: false so only Orchestrator drives the workflow`
+    );
     const scriptMatches = [...content.matchAll(/\bscripts\/([a-zA-Z0-9._-]+\.mjs)\b/g)];
     assert.ok(
       scriptMatches.length > 0,
@@ -154,7 +160,7 @@ test('Schemas and Skills: valid JSON schemas and every script mentioned in SKILL
     }
   }
 
-  assert.ok(verifiedScriptCount >= 3, 'Expected at least 3 verified skill scripts across all skills');
+  assert.ok(verifiedScriptCount >= 5, 'Expected at least 5 verified skill scripts across all skills');
 });
 
 test('Copilot Agents: frontmatter, delegation context, no hardcoded node commands in body, and agent-scoped preToolUse hooks on Planner & Migrator', () => {
@@ -209,9 +215,14 @@ test('Copilot Agents: frontmatter, delegation context, no hardcoded node command
   const orchestrator = parsedAgents.get('karma-vitest-orchestrator.agent.md');
   assert.equal(orchestrator.name, 'Angular Karma-to-Vitest');
   assert.equal(orchestrator.userInvocable, 'true');
-  assert.equal(orchestrator.hasHooks, false, 'Orchestrator must not carry migration hooks');
+  assert.equal(orchestrator.toolsLine.includes("'agent'"), true, 'Orchestrator must declare agent delegation tool');
   assert.equal(orchestrator.toolsLine.includes("'edit'"), false, 'Orchestrator must not have edit tool');
-  assert.equal(orchestrator.toolsLine.includes("'execute'"), false, 'Orchestrator must not have execute tool');
+  assert.equal(orchestrator.toolsLine.includes("'execute'"), true, 'Orchestrator has execute strictly gated by --phase orchestrate hook for approve-artifact.mjs');
+  assert.match(
+    orchestrator.body,
+    /#vscode\/askQuestions/,
+    'Orchestrator body must reference #vscode/askQuestions for interactive hybrid checkpoints'
+  );
   assert.match(
     orchestrator.body,
     /Contexto explícito en cada delegación/i,
@@ -238,29 +249,37 @@ test('Copilot Agents: frontmatter, delegation context, no hardcoded node command
   }
 
   const expectedHookPhases = new Map([
+    ['karma-vitest-orchestrator.agent.md', 'orchestrate'],
+    ['karma-vitest-analyst.agent.md', 'audit'],
     ['karma-vitest-planner.agent.md', 'plan'],
     ['karma-vitest-migrator.agent.md', 'migrate'],
   ]);
 
   for (const [file, info] of parsedAgents.entries()) {
     const expectedPhase = expectedHookPhases.get(file);
-    if (expectedPhase) {
-      assert.equal(info.hasHooks, true, `${file} must define agent-scoped hooks`);
-      assert.match(info.rawFrontmatter, /^\s+preToolUse:/m, `${file} must use Copilot harness preToolUse event`);
+    assert.ok(expectedPhase, `Unexpected agent file ${file}`);
+    assert.equal(info.hasHooks, true, `${file} must define agent-scoped hooks`);
+    assert.match(info.rawFrontmatter, /^\s+preToolUse:/m, `${file} must use Copilot harness preToolUse event`);
+
+    if (file !== 'karma-vitest-orchestrator.agent.md') {
       assert.equal(info.toolsLine.includes("'agent'"), false, `${file} must not declare delegation tools`);
-      const cmdMatch = info.rawFrontmatter.match(/command:\s*(.+)$/m);
-      assert.ok(cmdMatch, `${file} hook must specify a command`);
-      assert.match(
-        cmdMatch[1],
-        new RegExp(`--hook\\s+--phase\\s+${expectedPhase}\\b`),
-        `${file} hook must invoke verify-artifacts-gate.mjs with --hook --phase ${expectedPhase}`
+      assert.equal(
+        getScalarField(info.rawFrontmatter, 'disable-model-invocation'),
+        'false',
+        `${file} subagent must explicitly set disable-model-invocation: false`
       );
-      const expandedCmd = cmdMatch[1].trim().replace(/\$\{PLUGIN_ROOT\}/g, PLUGIN_ROOT);
-      const scriptMatch = expandedCmd.match(/"([^"]+\.mjs)"/);
-      assert.ok(scriptMatch, `${file} hook command must reference a .mjs script`);
-      assert.ok(fs.existsSync(scriptMatch[1]), `${file} hook script must exist at ${scriptMatch[1]}`);
-    } else {
-      assert.equal(info.hasHooks, false, `${file} must NOT define migration hooks`);
     }
+
+    const cmdMatch = info.rawFrontmatter.match(/command:\s*(.+)$/m);
+    assert.ok(cmdMatch, `${file} hook must specify a command`);
+    assert.match(
+      cmdMatch[1],
+      new RegExp(`--hook\\s+--phase\\s+${expectedPhase}\\b`),
+      `${file} hook must invoke verify-artifacts-gate.mjs with --hook --phase ${expectedPhase}`
+    );
+    const expandedCmd = cmdMatch[1].trim().replace(/\$\{PLUGIN_ROOT\}/g, PLUGIN_ROOT);
+    const scriptMatch = expandedCmd.match(/"([^"]+\.mjs)"/);
+    assert.ok(scriptMatch, `${file} hook command must reference a .mjs script`);
+    assert.ok(fs.existsSync(scriptMatch[1]), `${file} hook script must exist at ${scriptMatch[1]}`);
   }
 });

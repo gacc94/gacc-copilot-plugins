@@ -8,7 +8,17 @@ Este repositorio centraliza plugins especializados por tecnología bajo `plugins
 
 ## 1. Requisitos Globales
 
-* **Visual Studio Code** con **GitHub Copilot Chat** (harness **Copilot**) o **GitHub Copilot CLI**.
+* **Visual Studio Code `>= 1.133.0`** *(recomendado **`>= 1.143.0`** / `>= 1.146.0`)* con **GitHub Copilot Chat** (harness **Copilot**) o **GitHub Copilot CLI**.
+  * Verifica tu versión local con:
+    ```bash
+    code --version
+    ```
+  * **Compatibilidad validada por capacidad (notas oficiales de lanzamiento de VS Code):**
+    * [`>= 1.109`](https://code.visualstudio.com/updates/v1_109): propiedades `user-invocable` y `disable-model-invocation` en custom agents.
+    * [`>= 1.110`](https://code.visualstudio.com/updates/v1_110): soporte de Agent Plugins (`chat.plugins.enabled`, `chat.plugins.marketplaces`).
+    * [`>= 1.111`](https://code.visualstudio.com/updates/v1_111): hooks con alcance por agente (*agent-scoped hooks*, preview — `chat.useCustomAgentHooks`).
+    * [`>= 1.133`](https://code.visualstudio.com/updates/v1_133): estándar **Agent Plugins 1.0** (`$schema` + `com.github.copilot/agents/`).
+    * [`>= 1.143`](https://code.visualstudio.com/updates/v1_143) *(recomendado)*: **Copilot harness** habilitado por defecto para nuevas sesiones de agentes (y desde [`1.146`](https://code.visualstudio.com/updates/v1_146), deprecación oficial del Local harness con retiro en febrero de 2027).
 * **Node.js `>= 20.19.0`** (recomendado `22.x LTS` o `24.x LTS`; para proyectos con Angular 22 se requiere Node.js `>= 22.22.3`).
   * Verifica tu instalación local con:
     ```bash
@@ -26,13 +36,14 @@ gacc-copilot-plugins/
 │   └── plugin/
 │       └── marketplace.json                  # Catálogo oficial multi-plugin
 ├── README.md                                 # Guía de configuración global del marketplace
-├── tests/
+├── __tests__/
 │   ├── verify-artifacts-gate.test.mjs        # Pruebas de seguridad y contrato del gate (node:test)
 │   └── plugin-structure.test.mjs             # Pruebas de integridad Agent Plugins 1.0 y marketplace
 └── plugins/
     └── angular-frontend/                     # Plugin Angular (Karma → Vitest, v2.0.2)
         ├── plugin.json                       # Manifiesto Agent Plugins 1.0 ($schema)
         ├── README.md
+        ├── docs/                             # Diagramas Mermaid y documentación técnica
         ├── skills/                           # Skills portables (con sus scripts/ y references/)
         └── com.github.copilot/
             └── agents/                       # Custom agents específicos de Copilot (incluye hooks agent-scoped)
@@ -161,7 +172,7 @@ Para iterar rápidamente sobre un plugin sin reinstalarlo desde el catálogo:
 Ejecuta la suite completa de pruebas estructurales y de seguridad con el runner nativo de Node.js:
 
 ```bash
-node --test tests/verify-artifacts-gate.test.mjs tests/plugin-structure.test.mjs
+node --test __tests__/verify-artifacts-gate.test.mjs __tests__/plugin-structure.test.mjs
 ```
 
 Para inspeccionar el descubrimiento y ejecución del plugin en VS Code (Copilot harness), usa **Agent Customizations** (`Chat: Open Customizations`) junto con los **registros de depuración del agente y diagnósticos del proveedor** (y valida por separado en **Copilot CLI** si distribuyes el catálogo para ambos entornos).
@@ -173,4 +184,4 @@ Para inspeccionar el descubrimiento y ejecución del plugin en VS Code (Copilot 
 1. Crea una nueva carpeta bajo `plugins/<tecnologia>-<rol>/` (por ejemplo, `plugins/nestjs-backend/` o `plugins/java-backend/`).
 2. Añade su manifiesto `plugin.json` siguiendo **Agent Plugins 1.0** (`"$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json"`), su `README.md`, sus skills portables en `skills/` y sus componentes específicos de Copilot en `com.github.copilot/agents/`.
 3. Registra la nueva entrada dentro del arreglo `plugins` en `.github/plugin/marketplace.json` con su ruta relativa en `source` y la misma versión que `plugin.json`.
-4. Ejecuta `node --test tests/*.test.mjs` y haz commit de los cambios en Git para que el marketplace refleje la nueva revisión.
+4. Ejecuta `node --test __tests__/*.test.mjs` y haz commit de los cambios en Git para que el marketplace refleje la nueva revisión.

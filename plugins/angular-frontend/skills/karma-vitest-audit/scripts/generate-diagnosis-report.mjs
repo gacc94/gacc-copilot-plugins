@@ -11,15 +11,18 @@
  *
  * Prints only a compact JSON summary (~15 lines) to stdout so the LLM context stays minimal.
  */
+import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 
-const SCHEMA_VERSION = '1.2.0';
+const SCHEMA_VERSION = '1.3.0';
 const OFFICIAL_SCHEMATIC_CMD = 'ng g @schematics/angular:refactor-jasmine-vitest';
 const ARTIFACTS_SUBDIR = path.join('.migration-artifacts', 'karma-to-vitest');
 
 const JASMINE_API_PATTERNS = [
   { name: 'spyOn', regex: /\bspyOn\s*\(/g },
+  { name: 'jasmine.SpyObj<T>', regex: /\bjasmine\.SpyObj\s*</g },
+  { name: 'jasmine.Spy', regex: /\bjasmine\.Spy\b(?!Obj)/g },
   { name: 'jasmine.createSpy', regex: /\bjasmine\.createSpy\s*\(/g },
   { name: 'jasmine.createSpyObj', regex: /\bjasmine\.createSpyObj\s*\(/g },
   { name: 'jasmine.any', regex: /\bjasmine\.any\s*\(/g },
@@ -28,6 +31,8 @@ const JASMINE_API_PATTERNS = [
   { name: 'jasmine.arrayContaining', regex: /\bjasmine\.arrayContaining\s*\(/g },
   { name: 'jasmine.stringMatching', regex: /\bjasmine\.stringMatching\s*\(/g },
   { name: 'toBeTrue/toBeFalse', regex: /\.toBe(?:True|False)\s*\(/g },
+  { name: 'spy.calls.reset', regex: /\.calls\.reset\s*\(/g },
+  { name: 'spy.calls.mostRecent', regex: /\.calls\.mostRecent\s*\(/g },
   { name: 'spy.and.*', regex: /\.and\.(?:returnValue|returnValues|callFake|callThrough|throwError|resolveTo|rejectWith|stub)\s*\(/g },
 ];
 
@@ -40,12 +45,33 @@ const ASYNC_TIMER_PATTERNS = [
 
 const COMPLEX_SPEC_PATTERNS = [
   { name: 'jasmine.clock', regex: /\bjasmine\.clock\s*\(/ },
+  { name: 'jasmine.isSpy', regex: /\bjasmine\.isSpy\s*\(/ },
   { name: 'spyOnProperty', regex: /\bspyOnProperty\s*\(/ },
   { name: 'spyOnAllFunctions', regex: /\bspyOnAllFunctions\s*\(/ },
   { name: 'jasmine.addMatchers', regex: /\bjasmine\.addMatchers\s*\(/ },
   { name: 'jasmine.createSpyObj-with-properties', regex: /\bjasmine\.createSpyObj\s*\([^)]*,[^)]*,[^)]*\)/ },
   { name: 'async-done-callback', regex: /\b(?:it|fit|beforeEach|afterEach)\s*\([^,]+,\s*(?:async\s*)?\(\s*done\b/ },
 ];
+
+const MANUAL_MIGRATION_PATTERNS = new Set([
+  'jasmine.isSpy',
+  'jasmine.addMatchers',
+  'jasmine.clock',
+  'async-done-callback',
+]);
+
+const REVIEW_REQUIRED_PATTERNS = new Set([
+  'jasmine.SpyObj<T>',
+  'jasmine.Spy',
+  'spy.calls.reset',
+  'spy.and.*',
+  'spyOnProperty',
+  'spyOnAllFunctions',
+  'jasmine.createSpyObj-with-properties',
+  'fakeAsync',
+  'tick',
+  'flush',
+]);
 
 const CUSTOM_KARMA_PATTERNS = [
   { name: 'proxies', regex: /\bproxies\s*:/ },
@@ -162,10 +188,36 @@ function inspectAllSpecs(specFiles) {
     totalFakeAsyncTickUsages += fileAsyncTimerCount;
 
     let complexity = 'low';
+    const hasSpyObjType = detectedPatterns.has('jasmine.SpyObj<T>') || detectedPatterns.has('jasmine.Spy');
     if (fileComplexPatterns.length > 0 || fileJasmineCount >= 12) {
       complexity = 'high';
-    } else if (fileAsyncTimerCount > 0 || fileJasmineCount >= 4) {
+    } else if (fileAsyncTimerCount > 0 || fileJasmineCount >= 4 || hasSpyObjType) {
       complexity = 'medium';
+    }
+
+    let expectedOutcome = 'automatically_migrated';
+    if (fileComplexPatterns.some((p) => MANUAL_MIGRATION_PATTERNS.has(p))) {
+      expectedOutcome = 'manual_migration';
+    } else if (
+      complexity !== 'low' ||
+      [...detectedPatterns].some((p) => REVIEW_REQUIRED_PATTERNS.has(p))
+    ) {
+      expectedOutcome = 'requires_review';
+    }
+
+    // Deterministic 1-10 numeric complexity score aligned with low (1-3), medium (4-6), high (7-10)
+    let rawScore =
+      1 +
+      Math.min(4, Math.ceil(fileJasmineCount / 3)) +
+      (fileAsyncTimerCount >= 3 ? 2 : fileAsyncTimerCount > 0 ? 1 : 0) +
+      Math.min(3, fileComplexPatterns.length * 2);
+    let complexityScore;
+    if (complexity === 'high') {
+      complexityScore = Math.max(7, Math.min(10, rawScore + 2));
+    } else if (complexity === 'medium') {
+      complexityScore = Math.max(4, Math.min(6, rawScore));
+    } else {
+      complexityScore = Math.max(1, Math.min(3, rawScore));
     }
 
     counts[complexity] += 1;
@@ -183,12 +235,19 @@ function inspectAllSpecs(specFiles) {
       jasmineApiCount: fileJasmineCount,
       fakeAsyncTickCount: fileAsyncTimerCount,
       complexity,
+      complexityScore,
+      expectedOutcome,
     });
   }
 
-  // Sort inventory: high -> medium -> low, then alphabetical
+  // Sort inventory: high -> medium -> low, higher score first, then alphabetical
   const rank = { high: 0, medium: 1, low: 2 };
-  specInventory.sort((a, b) => rank[a.complexity] - rank[b.complexity] || a.file.localeCompare(b.file));
+  specInventory.sort(
+    (a, b) =>
+      rank[a.complexity] - rank[b.complexity] ||
+      b.complexityScore - a.complexityScore ||
+      a.file.localeCompare(b.file)
+  );
 
   const total = specInventory.length;
   const pct = (n) => (total === 0 ? 0 : Math.round((n / total) * 100));
@@ -243,6 +302,7 @@ function detectProjectsAndTargets(angularJson, selectedProject = null) {
       angularProjectCount: 0,
       testTargets: [],
       primaryBuilder: null,
+      primaryBuildBuilder: null,
       projectName: null,
       selectedProjectRoot: null,
       selectedKarmaConfig: null,
@@ -257,6 +317,7 @@ function detectProjectsAndTargets(angularJson, selectedProject = null) {
       angularProjectCount: projectNames.length,
       testTargets: [],
       primaryBuilder: null,
+      primaryBuildBuilder: null,
       projectName: selectedProject,
       selectedProjectRoot: null,
       selectedKarmaConfig: null,
@@ -270,12 +331,17 @@ function detectProjectsAndTargets(angularJson, selectedProject = null) {
     : Object.entries(angularJson.projects);
 
   const testTargets = [];
+  let primaryBuildBuilder = null;
   for (const [projName, projConfig] of entries) {
     const targets = projConfig?.architect || projConfig?.targets;
+    if (!primaryBuildBuilder && targets?.build?.builder) {
+      primaryBuildBuilder = targets.build.builder;
+    }
     if (targets?.test?.builder) {
       testTargets.push({
         project: projName,
         builder: targets.test.builder,
+        buildBuilder: targets.build?.builder || null,
         hasKarmaConfigOption: Boolean(targets.test.options?.karmaConfig),
         karmaConfigPath: targets.test.options?.karmaConfig || null,
         hasCustomAssetsOrStyles: Boolean(
@@ -294,6 +360,7 @@ function detectProjectsAndTargets(angularJson, selectedProject = null) {
     angularProjectCount: selectedProject ? 1 : projectNames.length,
     testTargets,
     primaryBuilder: primary ? primary.builder : null,
+    primaryBuildBuilder: primary?.buildBuilder || primaryBuildBuilder,
     projectName: selectedProject || (primary ? primary.project : projectNames[0] || null),
     selectedProjectRoot,
     selectedKarmaConfig: primary?.karmaConfigPath || null,
@@ -366,7 +433,7 @@ function renderMarkdown(report) {
   const lines = [
     `# Migration Assessment Report — \`${report.detected.projectName || path.basename(report.projectPath)}\``,
     '',
-    `> **Estado:** ${statusIcon} · **Estrategia recomendada:** ${strategyLabels[report.recommendedStrategy] || report.recommendedStrategy} · **Evaluado:** \`${report.evaluatedAt}\``,
+    `> **Estado:** ${statusIcon} · **Estrategia recomendada:** ${strategyLabels[report.recommendedStrategy] || report.recommendedStrategy} · **Evaluado:** \`${report.evaluatedAt}\` · **Huella:** \`${report.diagnosisHash}\``,
     '',
     '---',
     '',
@@ -425,13 +492,13 @@ function renderMarkdown(report) {
     lines.push(
       '## 6. Inventario de Archivos `*.spec.ts`',
       '',
-      '| Archivo | Complejidad | Jasmine APIs | `fakeAsync`/timers | Patrones detectados |',
-      '| :--- | :---: | :---: | :---: | :--- |'
+      '| Archivo | Complejidad | Score (1-10) | Jasmine APIs | `fakeAsync`/timers | Patrones detectados |',
+      '| :--- | :---: | :---: | :---: | :---: | :--- |'
     );
     for (const s of report.specInventory) {
       const badge = s.complexity === 'high' ? '🔴 Alta' : s.complexity === 'medium' ? '🟠 Media' : '🟢 Baja';
       lines.push(
-        `| \`${s.file}\` | ${badge} | ${s.jasmineApiCount} | ${s.fakeAsyncTickCount} | ${s.jasminePatterns.join(', ') || 'Estándar'} |`
+        `| \`${s.file}\` | ${badge} | **${s.complexityScore}/10** | ${s.jasmineApiCount} | ${s.fakeAsyncTickCount} | ${s.jasminePatterns.join(', ') || 'Estándar'} |`
       );
     }
     lines.push('');
@@ -1237,12 +1304,24 @@ function main() {
     angularProjectCount,
     testTargets,
     primaryBuilder: testBuilder,
+    primaryBuildBuilder: buildBuilder,
     projectName,
     selectedProjectRoot,
     selectedKarmaConfig,
     selectedProjectNotFound,
     availableProjects,
   } = detectProjectsAndTargets(angularJson, angularProject);
+
+  const isLegacyBuildSystem =
+    Boolean(buildBuilder) &&
+    buildBuilder !== '@angular/build:application' &&
+    buildBuilder !== '@angular-devkit/build-angular:application';
+  if (isLegacyBuildSystem) {
+    warnings.push({
+      code: 'LEGACY_BUILD_SYSTEM_DETECTED',
+      message: `El target "build" utiliza "${buildBuilder}". La migración oficial de Karma a Vitest (@angular/build:unit-test) requiere el sistema de construcción "application" (@angular/build:application).`,
+    });
+  }
 
   if (selectedProjectNotFound) {
     blockers.push({
@@ -1321,6 +1400,9 @@ function main() {
     for (const b of blockers) strategyReasons.push(b.message);
     officialSchematicNotes = 'Bloqueado: el proyecto debe migrar primero a Angular 21+ antes de usar @angular/build:unit-test o el schematic oficial.';
   } else {
+    if (isLegacyBuildSystem) {
+      strategyReasons.push(`El target "build" utiliza "${buildBuilder}" en lugar del sistema "application" (@angular/build:application), requerido por @angular/build:unit-test.`);
+    }
     if (karmaConfInfo.isCustom) {
       strategyReasons.push(`Se detectó karma.conf.js personalizado (${karmaConfInfo.customFeatures.join(', ')}) que el schematic oficial no migra automáticamente.`);
     }
@@ -1348,12 +1430,14 @@ function main() {
 
   const detected = {
     projectName: angularProject || pkg.name || projectName || path.basename(projectDir),
+    selectedAngularProject: angularProject || projectName || null,
     angularCoreVersion: angularCore ? angularCore.version : null,
     angularCoreRaw,
     angularCliVersion: angularCli ? angularCli.version : null,
     angularBuildRaw,
     nodeVersion: process.versions.node,
     testBuilder,
+    buildBuilder,
     angularProjectCount,
     testTargetCount: testTargets.length,
     hasKarmaDeps: dependenciesToReview.some((d) => d.startsWith('karma')),
@@ -1361,6 +1445,27 @@ function main() {
     hasKarmaConf: karmaConfInfo.exists,
     specFileCount: specAnalysis.specInventory.length,
   };
+
+  const diagnosisFingerprintPayload = {
+    selectedAngularProject: detected.selectedAngularProject,
+    angularCoreVersion: detected.angularCoreVersion,
+    testBuilder: detected.testBuilder,
+    hasKarmaConf: detected.hasKarmaConf,
+    customKarmaFeatures: [...karmaConfInfo.customFeatures].sort(),
+    dependenciesToReview: [...dependenciesToReview].sort(),
+    specInventory: specAnalysis.specInventory.map((s) => ({
+      file: s.file,
+      complexity: s.complexity,
+      complexityScore: s.complexityScore,
+      jasmineApiCount: s.jasmineApiCount,
+      fakeAsyncTickCount: s.fakeAsyncTickCount,
+    })),
+  };
+  const diagnosisHash = `sha256:${crypto
+    .createHash('sha256')
+    .update(JSON.stringify(diagnosisFingerprintPayload))
+    .digest('hex')
+    .slice(0, 16)}`;
 
   const findings = {
     jasmineApiUsages: specAnalysis.totalJasmineApiUsages,
@@ -1398,6 +1503,7 @@ function main() {
 
   const report = {
     schemaVersion: SCHEMA_VERSION,
+    diagnosisHash,
     evaluatedAt: new Date().toISOString(),
     projectPath: projectDir,
     status,
@@ -1440,6 +1546,7 @@ function main() {
       status: 'PENDING',
       reviewer: null,
       approvedAt: null,
+      mode: null,
       notes:
         status === 'BLOCKED'
           ? 'Bloqueado: requiere upgrade previo a Angular 21+ antes de poder aprobarse.'
@@ -1454,6 +1561,7 @@ function main() {
   // Print ONLY a compact summary to stdout to keep LLM token usage minimal
   const compactSummary = {
     status: report.status,
+    diagnosisHash: report.diagnosisHash,
     recommendedStrategy: report.recommendedStrategy,
     angularCoreVersion: report.detected.angularCoreVersion,
     metrics: report.metrics,
